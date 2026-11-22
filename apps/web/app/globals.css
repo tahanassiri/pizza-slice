@@ -1,0 +1,174 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ink: #0c1b2a;
+  --ink-soft: #1a3348;
+  --ink-muted: #4a6275;
+  --paper: #f2f6f8;
+  --paper-elevated: #ffffff;
+  --fog: #dce6ec;
+  --line: #c5d3dc;
+  --accent: #0f6e6a;
+  --accent-hover: #0c5956;
+  --accent-soft: #d7efed;
+  --warn: #9a6700;
+  --warn-soft: #fff3cd;
+  --danger: #b42318;
+  --danger-soft: #fee4e2;
+  --ok: #027a48;
+  --ok-soft: #dcfae6;
+  --mock: #7a4d00;
+  --mock-soft: #fff1d6;
+  --radius: 12px;
+  --shadow-soft: 0 12px 40px rgba(12, 27, 42, 0.08);
+  --font-sans: var(--font-vazirmatn), "Vazirmatn", Tahoma, sans-serif;
+  --font-display: var(--font-syne), var(--font-vazirmatn), sans-serif;
+}
+
+html {
+  direction: rtl;
+}
+
+body {
+  color: var(--ink);
+  background: var(--paper);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  text-rendering: optimizeLegibility;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(1200px 600px at 100% -10%, rgba(15, 110, 106, 0.16), transparent 55%),
+    radial-gradient(900px 500px at -10% 20%, rgba(26, 51, 72, 0.12), transparent 50%),
+    linear-gradient(165deg, #eef4f7 0%, #e3ecf1 45%, #d8e5ea 100%);
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.35;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(12, 27, 42, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(12, 27, 42, 0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(circle at 50% 20%, black, transparent 75%);
+}
+
+@layer components {
+  .nova-container {
+    @apply mx-auto w-full max-w-6xl px-4 sm:px-6;
+  }
+
+  .nova-panel {
+    background: color-mix(in srgb, var(--paper-elevated) 92%, transparent);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-soft);
+    backdrop-filter: blur(8px);
+  }
+
+  .nova-btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition;
+  }
+
+  .nova-btn-primary {
+    @apply nova-btn text-white;
+    background: var(--accent);
+  }
+
+  .nova-btn-primary:hover {
+    background: var(--accent-hover);
+  }
+
+  .nova-btn-primary:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
+
+  .nova-btn-ghost {
+    @apply nova-btn border;
+    border-color: var(--line);
+    color: var(--ink-soft);
+    background: transparent;
+  }
+
+  .nova-btn-ghost:hover {
+    background: var(--fog);
+  }
+
+  .nova-input {
+    @apply w-full rounded-xl border bg-white px-3 py-2.5 text-sm outline-none transition;
+    border-color: var(--line);
+    color: var(--ink);
+  }
+
+  .nova-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  .nova-label {
+    @apply mb-1.5 block text-sm font-medium;
+    color: var(--ink-soft);
+  }
+
+  .mock-banner {
+    background: var(--mock-soft);
+    color: var(--mock);
+    border: 1px solid color-mix(in srgb, var(--mock) 25%, transparent);
+  }
+
+  @media print {
+    body::before,
+    body::after,
+    header,
+    .no-print {
+      display: none !important;
+    }
+    body {
+      background: white;
+    }
+    .nova-panel {
+      box-shadow: none;
+      border-color: #ddd;
+    }
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.45s ease-out both;
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 1.6s ease-in-out infinite;
+}

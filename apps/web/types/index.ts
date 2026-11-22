@@ -1,0 +1,213 @@
+/** Typed contracts for NOVA Export Intelligence — Phase A (mock-ready for live). */
+
+export type RunStatus =
+  | "idle"
+  | "queued"
+  | "running"
+  | "partial"
+  | "completed"
+  | "failed"
+  | "rate_limited"
+  | "provider_unavailable"
+  | "cancelled";
+
+export type AnalysisPhase =
+  | "intake"
+  | "product_classify"
+  | "search"
+  | "trade_stats"
+  | "market_compare"
+  | "conclude"
+  | "buyers"
+  | "feasibility"
+  | "report";
+
+export type ConfidenceLevel = "high" | "medium" | "low" | "unknown";
+
+export type VerificationStatus =
+  | "unverified"
+  | "source_backed"
+  | "needs_review"
+  | "rejected";
+
+export type FixtureId =
+  | "happy"
+  | "sparse"
+  | "unavailable"
+  | "quota"
+  | "partial"
+  | "incomplete_financial";
+
+export interface Source {
+  url: string;
+  title: string;
+  publisher: string;
+  published_at?: string;
+  fetched_at: string;
+  provider: string;
+  reliability_note: string;
+}
+
+export interface MarketMetric {
+  key: string;
+  label_fa: string;
+  value: string;
+  unit?: string;
+  estimated?: boolean;
+}
+
+export interface Market {
+  country_code: string;
+  country_name_fa: string;
+  rank: number;
+  evidence: string[];
+  opportunities: string[];
+  risks: string[];
+  metrics: MarketMetric[];
+  confidence: ConfidenceLevel;
+  unknowns: string[];
+  sources: Source[];
+}
+
+export interface BuyerContact {
+  email?: string;
+  phone?: string;
+  note_fa?: string;
+}
+
+export interface Buyer {
+  company_name: string;
+  website?: string;
+  country: string;
+  business_type?: string;
+  fit_evidence: string[];
+  contact?: BuyerContact;
+  verification_status: VerificationStatus;
+  sources: Source[];
+}
+
+export interface CostItem {
+  id: string;
+  label_fa: string;
+  amount: number | null;
+  currency: string;
+  unit?: string;
+  required: boolean;
+  note_fa?: string;
+}
+
+export interface ScenarioResult {
+  id: "conservative" | "base" | "optimistic";
+  label_fa: string;
+  revenue: number | null;
+  total_cost: number | null;
+  margin: number | null;
+  margin_pct: number | null;
+  notes_fa: string[];
+}
+
+export interface Feasibility {
+  input_assumptions: Record<string, string | number | null>;
+  cost_items: CostItem[];
+  currency: string;
+  incoterm?: string;
+  scenario_results: ScenarioResult[];
+  missing_inputs: string[];
+  caveats: string[];
+  is_mock_sample: boolean;
+}
+
+export interface RunEvent {
+  event_id: string;
+  run_id: string;
+  phase: AnalysisPhase;
+  status: RunStatus;
+  message_fa: string;
+  timestamp: string;
+  payload?: Record<string, unknown>;
+  source_refs?: Source[];
+  error_code?: string;
+}
+
+export interface RunError {
+  code: string;
+  message_fa: string;
+  retryable: boolean;
+}
+
+export interface Run {
+  id: string;
+  product: string;
+  origin_country: string;
+  guessed_hs_code?: string;
+  hs_confidence?: ConfidenceLevel;
+  phase: AnalysisPhase;
+  status: RunStatus;
+  created_at: string;
+  updated_at: string;
+  selected_country?: string;
+  error?: RunError;
+  is_mock: true;
+  fixture_id: FixtureId;
+}
+
+export interface Report {
+  run_id: string;
+  product: string;
+  origin_country: string;
+  summary_fa: string;
+  markets: Market[];
+  selected_country?: string;
+  buyers: Buyer[];
+  feasibility?: Feasibility;
+  risks_fa: string[];
+  assumptions_fa: string[];
+  sources: Source[];
+  collected_at: string;
+  is_mock: true;
+  client_name?: string;
+  company_name?: string;
+}
+
+export interface CreateRunInput {
+  product: string;
+  origin_country: string;
+  hs_code?: string;
+  fixture_id?: FixtureId;
+}
+
+export interface CreateRunResponse {
+  run_id: string;
+}
+
+export interface RunSnapshot {
+  run: Run;
+  last_event_id?: string;
+  events: RunEvent[];
+  markets: Market[];
+  buyers: Buyer[];
+  feasibility?: Feasibility;
+  report?: Report;
+}
+
+export interface ProviderConfig {
+  id: string;
+  name: string;
+  enabled: boolean;
+  model?: string;
+  has_key_configured: boolean;
+  status: "idle" | "ok" | "error" | "quota" | "untested";
+  usage_note_fa: string;
+  daily_limit?: number;
+  used_today?: number;
+}
+
+export interface AdminSettingsView {
+  providers: ProviderConfig[];
+  selected_model: string;
+  connection_message_fa: string;
+  error_history: { at: string; message_fa: string }[];
+  is_mock_ui: true;
+}
+
+export type AnalysisTab = "timeline" | "markets" | "buyers" | "feasibility" | "report";
