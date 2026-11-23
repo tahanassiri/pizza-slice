@@ -61,6 +61,8 @@ class KnowledgeRepository:
 
         Never returns private-scope rows.
         """
+        # Normalize: empty period is the stable "current" snapshot key
+        period_norm = (period or "").strip()
         key = canonical_key(
             kind=kind,
             product=product,
@@ -68,7 +70,7 @@ class KnowledgeRepository:
             origin=origin,
             destination=destination,
             metric=metric,
-            period=period,
+            period=period_norm,
         )
         rows = list(
             self.db.scalars(
@@ -81,6 +83,29 @@ class KnowledgeRepository:
                 .order_by(KnowledgeItem.version.desc())
             )
         )
+        # Fallback: if lookup used empty period but older rows stored a year in the key,
+        # find latest public row with matching prefix (kind|product|hs|origin|dest|metric|)
+        if not rows and period_norm == "":
+            prefix = canonical_key(
+                kind=kind,
+                product=product,
+                hs6=hs6,
+                origin=origin,
+                destination=destination,
+                metric=metric,
+                period="",
+            ).rsplit("|", 1)[0] + "|"
+            rows = list(
+                self.db.scalars(
+                    select(KnowledgeItem)
+                    .where(
+                        KnowledgeItem.canonical_key.startswith(prefix),
+                        KnowledgeItem.scope == "public",
+                        KnowledgeItem.status == "active",
+                    )
+                    .order_by(KnowledgeItem.fetched_at.desc(), KnowledgeItem.version.desc())
+                )
+            )
         if not rows:
             return None, "miss"
         item = rows[0]

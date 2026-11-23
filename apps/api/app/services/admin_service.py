@@ -18,20 +18,13 @@ from app.schemas.contracts import (
     TradeSourceStatusOut,
 )
 
+# Only the active LLM drives research decisions. No mandatory Tavily/Exa/WITS/Comtrade keys.
 DEFAULT_PROVIDERS = [
-    ("tavily", "Tavily", None, 50),
-    ("exa", "Exa", None, 50),
-    ("comtrade", "UN Comtrade (اختیاری)", None, None),
-    ("gemini", "Gemini", "gemini-3.8-flash", None),
+    ("gemini", "Gemini (legacy row)", "gemini-3.8-flash", None),
 ]
 
 _PROVIDER_NOTES = {
-    "comtrade": (
-        "کلید اجباری نیست. پیش‌فرض خاموش. با «فعال» می‌توان پیش‌نمایش عمومی "
-        "بدون کلید را امتحان کرد؛ برای رتبه‌بندی سراسری به تنهایی استفاده نمی‌شود."
-    ),
-    "tavily": "کلید اختیاری برای تحقیق تکمیلی بازار/خریدار.",
-    "exa": "کلید اختیاری — در صورت پیکربندی برای تحقیق استفاده می‌شود.",
+    "gemini": "ردیف میراثی — انتخاب مدل و کلید نسخه از بخش مدل LLM انجام می‌شود.",
 }
 
 LLM_KEY_PREFIX = "llm_model_key::"
@@ -49,14 +42,6 @@ def ensure_providers(db: Session) -> None:
     existing = {p.provider_id for p in db.scalars(select(ProviderSetting)).all()}
     for pid, name, model, limit in DEFAULT_PROVIDERS:
         if pid in existing:
-            # Keep Comtrade note/name current without forcing enable
-            if pid == "comtrade":
-                row = db.scalar(
-                    select(ProviderSetting).where(ProviderSetting.provider_id == "comtrade")
-                )
-                if row:
-                    row.name = name
-                    row.usage_note_fa = _PROVIDER_NOTES["comtrade"]
             continue
         db.add(
             ProviderSetting(
@@ -71,6 +56,15 @@ def ensure_providers(db: Session) -> None:
                 used_today=0,
             )
         )
+    # Soft-disable legacy trade/search key rows if present (no wipe)
+    for legacy in ("tavily", "exa", "comtrade"):
+        row = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == legacy))
+        if row:
+            row.enabled = 0
+            row.usage_note_fa = (
+                "غیرفعال — یکپارچگی اجباری حذف شد؛ ایجنت از وب رایگان کشف‌شده استفاده می‌کند."
+            )
+            row.status = "inactive"
     default = _default_model()
     if not db.get(AppMeta, "selected_model"):
         db.add(AppMeta(key="selected_model", value=default))
@@ -78,41 +72,30 @@ def ensure_providers(db: Session) -> None:
 
 
 def trade_sources_view(db: Session) -> list[TradeSourceStatusOut]:
-    """Status of TradeData providers for admin UI (no secrets)."""
+    """Research tooling status for admin — no mandatory paid/trade APIs."""
     ensure_providers(db)
     now = datetime.now(timezone.utc).isoformat()
-    comtrade = db.scalar(
-        select(ProviderSetting).where(ProviderSetting.provider_id == "comtrade")
-    )
-    comtrade_on = bool(comtrade and comtrade.enabled)
-    tavily = db.scalar(
-        select(ProviderSetting).where(ProviderSetting.provider_id == "tavily")
-    )
-    research_active = bool(tavily and tavily.enabled and tavily.encrypted_api_key)
+    model = get_selected_model(db)
+    has_key = model_has_key(db, model)
     return [
         TradeSourceStatusOut(
-            id="wits",
-            name="WITS Trade Stats",
+            id="free_web",
+            name="Free web (Wikipedia + DuckDuckGo HTML)",
             status="active",
             optional=False,
             last_checked=now,
-            note_fa="منبع ساختاریافته پیش‌فرض — بدون کلید",
+            note_fa="جست‌وجوی بدون کلید — حقایق وب جعل نمی‌شود",
         ),
         TradeSourceStatusOut(
-            id="research",
-            name="Deep Research (Tavily/Wiki)",
-            status="active" if research_active else "limited",
+            id="active_llm",
+            name=f"Active research LLM ({model})",
+            status="active" if has_key else "limited",
             optional=False,
             last_checked=now,
-            note_fa="با کلید Tavily عمیق‌تر؛ بدون کلید از Wikipedia استفاده می‌شود",
-        ),
-        TradeSourceStatusOut(
-            id="comtrade",
-            name="UN Comtrade Public Preview",
-            status="active" if comtrade_on else "inactive",
-            optional=True,
-            last_checked=now,
-            note_fa="اختیاری و پیش‌فرض خاموش — کلید اجباری نیست",
+            note_fa=(
+                "مدل تصمیم‌یار تحقیق"
+                + (" — کلید ذخیره شده (Saved ≠ Verified)" if has_key else " — بدون کلید: راهبرد اکتشافی")
+            ),
         ),
     ]
 
@@ -209,12 +192,14 @@ def settings_view(db: Session) -> AdminSettingsOut:
         trade_sources=trade_sources_view(db),
         connection_message_fa=(
             "کلید هر نسخه مدل جداگانه رمزنگاری می‌شود. "
-            "آمار تجارت از WITS است؛ کلید UN Comtrade اجباری نیست."
+            "مدل فعال تصمیم‌یار تحقیق است (نه فقط HS). "
+            "Saved key ≠ Verified connection. "
+            "جست‌وجوی وب رایگان بدون کلید اجباری Tavily/Exa/WITS/Comtrade."
         ),
         error_history=[
             {
                 "at": datetime.now(timezone.utc).isoformat(),
-                "message_fa": "بدون کلید نسخهٔ فعال، مسیر رایگان/stub برای LLM استفاده می‌شود.",
+                "message_fa": "بدون کلید نسخهٔ فعال، ایجنت با راهبرد اکتشافی وب رایگان ادامه می‌دهد.",
             }
         ],
         is_mock_ui=False,

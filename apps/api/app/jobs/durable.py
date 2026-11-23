@@ -99,7 +99,8 @@ def finish_task(
 
 
 def recover_stale_leases(db: Session) -> int:
-    """Mark expired running leases as interrupted for retry."""
+    """Re-queue interrupted work. Expired lease alone is not proof of completion —
+    tasks go to `interrupted` with checkpoint retained for safe retry (idempotent)."""
     now = _now()
     result = db.execute(
         update(ResearchTask)
@@ -113,9 +114,17 @@ def recover_stale_leases(db: Session) -> int:
             lease_owner=None,
             lease_until=None,
             error_code="LEASE_EXPIRED",
-            error_message_fa="اجارهٔ کار منقضی شد؛ نیاز به تلاش مجدد.",
+            error_message_fa=(
+                "اجاره منقضی شد — تکمیل اثبات نشده؛ checkpoint نگه داشته شد برای تلاش امن مجدد."
+            ),
             updated_at=now,
         )
+    )
+    # Also re-queue interrupted → queued so workers can claim again
+    db.execute(
+        update(ResearchTask)
+        .where(ResearchTask.status == "interrupted")
+        .values(status="queued", updated_at=now)
     )
     db.commit()
     return int(result.rowcount or 0)

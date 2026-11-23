@@ -230,33 +230,51 @@ class KeyedGeminiLLM:
         self.model = model
         self.timeout = timeout
 
-    def classify_hs(self, product: str, hs_hint: str | None) -> tuple[str | None, str]:
-        if hs_hint and hs_hint.strip():
-            return hs_hint.strip(), "medium"
+    def _generate(self, prompt: str, *, max_tokens: int = 1024) -> str:
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self.model}:generateContent"
         )
-        prompt = _HS_PROMPT.format(product=product)
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                r = client.post(
-                    url,
-                    headers={"x-goog-api-key": self.api_key},
-                    json={"contents": [{"parts": [{"text": prompt}]}]},
-                )
-            if r.status_code == 429 or r.status_code != 200:
-                return None, "unknown"
-            text = (
-                r.json()
-                .get("candidates", [{}])[0]
-                .get("content", {})
-                .get("parts", [{}])[0]
-                .get("text", "")
+        with httpx.Client(timeout=self.timeout) as client:
+            r = client.post(
+                url,
+                headers={"x-goog-api-key": self.api_key},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens},
+                },
             )
-            return _digits_hs(text)
+        if r.status_code != 200:
+            return ""
+        return (
+            r.json()
+            .get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+            or ""
+        )
+
+    def classify_hs(self, product: str, hs_hint: str | None) -> tuple[str | None, str]:
+        if hs_hint and hs_hint.strip():
+            return hs_hint.strip(), "medium"
+        try:
+            return _digits_hs(self._generate(_HS_PROMPT.format(product=product), max_tokens=32))
         except Exception:
             return None, "unknown"
+
+    def decide_research_action(self, context: dict) -> str:
+        import json
+
+        from app.agents.llm_decide import DECISION_USER_TEMPLATE
+
+        prompt = DECISION_USER_TEMPLATE.format(
+            context=json.dumps(context, ensure_ascii=False)
+        )
+        return self._generate(prompt, max_tokens=1024)
+
+    def complete_json(self, prompt: str) -> str:
+        return self._generate(prompt, max_tokens=1024)
 
 
 class KeyedOpenAICompatLLM:
@@ -277,33 +295,45 @@ class KeyedOpenAICompatLLM:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
+    def _chat(self, prompt: str, *, max_tokens: int = 1024, temperature: float = 0) -> str:
+        with httpx.Client(timeout=self.timeout) as client:
+            r = client.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+            )
+        if r.status_code != 200:
+            return ""
+        return (
+            (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        )
+
     def classify_hs(self, product: str, hs_hint: str | None) -> tuple[str | None, str]:
         if hs_hint and hs_hint.strip():
             return hs_hint.strip(), "medium"
-        prompt = _HS_PROMPT.format(product=product)
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                r = client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json={
-                        "model": self.model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0,
-                        "max_tokens": 32,
-                    },
-                )
-            if r.status_code == 429 or r.status_code != 200:
-                return None, "unknown"
-            text = (
-                (r.json().get("choices") or [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                or ""
-            )
-            return _digits_hs(text)
+            return _digits_hs(self._chat(_HS_PROMPT.format(product=product), max_tokens=32))
         except Exception:
             return None, "unknown"
+
+    def decide_research_action(self, context: dict) -> str:
+        import json
+
+        from app.agents.llm_decide import DECISION_USER_TEMPLATE
+
+        return self._chat(
+            DECISION_USER_TEMPLATE.format(context=json.dumps(context, ensure_ascii=False)),
+            max_tokens=1024,
+            temperature=0.2,
+        )
+
+    def complete_json(self, prompt: str) -> str:
+        return self._chat(prompt, max_tokens=1024, temperature=0.2)
 
 
 def build_llm(provider: str, api_key: str, model: str):

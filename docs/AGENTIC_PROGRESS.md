@@ -49,6 +49,14 @@
 - **Files:** `tests/test_section9_acceptance.py`, `tests/conftest.py`
 - **Remaining:** VPS deploy when SSH credential available
 
+## Architecture correction — LLM decision loop (post Phase 6)
+- **Implemented:** `decision_loop` + `llm_decide`; removed mandatory Tavily/Exa/WITS/Comtrade admin; free_web tools; planner country pools cleared; memory period="" fix; buyer SSE commit-before-publish; lease → interrupted→queued; Tests A–L
+- **Tests:** **93 passed**; Test L live Wikipedia+DDG **PASS**; web typecheck/lint/build **PASS**; Playwright **NOT_RUN**
+- **Pass-Fail:** Automated PASS; VPS **BLOCKED**; PR **NOT READY**
+- **Files:** `agents/{decision_loop,llm_decide}.py`, `tools/{free_web,extract,credibility}.py`, `test_architecture_correction.py`, admin/providers/docs
+- **Report:** Project store `docs/agentic-architecture-correction.md` (A–N + matrix)
+- **Remaining:** Playwright e2e when installable; VPS when SSH works
+
 ## §9 Acceptance matrix
 | # | Result | Test |
 |---|--------|------|

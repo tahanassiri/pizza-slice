@@ -203,7 +203,7 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
         job.status = "running"
         job.updated_at = datetime.now(timezone.utc)
         db.commit()
-        # Emit gate-respecting start event
+        # Persist event BEFORE publish so SSE replay never loses cards
         try:
             evt = append_event(
                 db,
@@ -214,7 +214,7 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
                 message_fa=f"شروع تحقیق خریدار در {country_code}",
                 payload={"event_type": "buyers.job_started", "country_code": country_code},
             )
-            # best-effort publish (sync bridge)
+            db.commit()
             try:
                 import asyncio
 
@@ -222,7 +222,7 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
             except Exception:
                 pass
         except Exception:
-            pass
+            db.rollback()
 
     status = "failed"
     error_code = "PROVIDER_UNAVAILABLE"
@@ -254,7 +254,7 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
                 executor=executor,
                 max_publish=10,
             )
-            # Emit per verified/needs_review card
+            # Emit per verified/needs_review card — commit then publish (SSE replay safe)
             for buyer in buyers:
                 try:
                     evt = append_event(
@@ -272,10 +272,12 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
                             ),
                             "company_name": buyer.company_name,
                             "verification_status": buyer.verification_status,
+                            "business_type": buyer.business_type,
                             "country_code": country_code,
                         },
                         source_refs=buyer.sources or None,
                     )
+                    db.commit()
                     try:
                         import asyncio
 
@@ -283,7 +285,7 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
                     except Exception:
                         pass
                 except Exception:
-                    pass
+                    db.rollback()
     except Exception:
         pass
 

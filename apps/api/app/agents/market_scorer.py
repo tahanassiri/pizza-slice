@@ -168,6 +168,59 @@ def score_from_trade_records(
     return sortable
 
 
+def score_from_evidence_markets(
+    proposals: list[dict],
+    *,
+    product: str,
+    sources: list[Source] | None = None,
+) -> list[Market]:
+    """Build markets from LLM/agent proposals — only with evidence; never invent."""
+    cards: list[MarketScoreCard] = []
+    for p in proposals:
+        code = str(p.get("country_code") or "").upper().strip()
+        if len(code) != 2:
+            continue
+        evidence = [str(x) for x in (p.get("evidence") or []) if str(x).strip()]
+        if not evidence:
+            continue  # no evidence → skip (unknown stays unknown)
+        rec = str(p.get("recommendation") or "watch")
+        if rec not in {"recommended", "risky", "watch"}:
+            rec = "watch"
+        scope = str(p.get("data_scope") or "qualitative")
+        if scope not in {"hs6", "sector", "total", "qualitative"}:
+            scope = "qualitative"
+        criteria = [
+            _criterion(
+                "demand",
+                0.55 if rec == "recommended" else 0.35 if rec == "risky" else None,
+                confidence="low",
+                note=evidence[0][:240],
+                refs=evidence[:2],
+            ),
+            _criterion("legal", None, confidence="unknown", note="نیازمند منبع رسمی روزآمد"),
+            _criterion("logistics", None, confidence="unknown", note="نرخ حمل استعلام نشده"),
+            _criterion("payment", None, confidence="unknown", note="مسیر پرداخت بررسی نشده"),
+            _criterion("competition", None, confidence="unknown", note="رقابت تکمیل نشده"),
+            _criterion("access", 0.4, confidence="low", note="برآورد کیفی دسترسی"),
+        ]
+        cards.append(
+            MarketScoreCard(
+                country_code=code,
+                criteria=criteria,
+                weights=clamp_weights(None),
+                total=0.5 if rec == "recommended" else 0.35 if rec == "risky" else None,
+                recommendation=rec,  # type: ignore[arg-type]
+                data_scope=scope,  # type: ignore[arg-type]
+                rationale_fa=[f"محصول: {product}", *evidence[:4], *(p.get("risks") or [])],
+            )
+        )
+    # Cap counts
+    recs = [c for c in cards if c.recommendation == "recommended"][:3]
+    risks = [c for c in cards if c.recommendation == "risky"][:2]
+    ordered = recs + risks
+    return cards_to_markets(ordered, sources=sources, source_name="agentic-web")
+
+
 def cards_to_markets(
     cards: list[MarketScoreCard],
     *,
@@ -175,6 +228,7 @@ def cards_to_markets(
     reference_year: int | str | None = None,
     source_name: str = "trade",
 ) -> list[Market]:
+
     markets: list[Market] = []
     sources = sources or []
     rec_rank = 0

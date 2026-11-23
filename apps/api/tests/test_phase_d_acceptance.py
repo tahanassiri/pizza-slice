@@ -81,49 +81,39 @@ def test_provider_missing_key_honest_buyers(client):
 
 
 def test_quota_exhausted_surface(client, monkeypatch):
-    """Keyed provider RATE_LIMITED maps to honest status without fake markets."""
-    monkeypatch.setenv("PROVIDER_MODE", "auto")
-    from app.core.config import get_settings
-    from app.core.security import encrypt_secret
-    from app.models.entities import ProviderSetting
-    from sqlalchemy import select
+    """Budget exhaustion / provider rate-limit surfaces honestly — no fake markets."""
+    from app.tools.budget import BudgetExceeded, consume, ensure_run_budget
+    from app.db.session import SessionLocal
 
-    get_settings.cache_clear()
-    db = SessionLocal()
-    try:
-        row = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == "tavily"))
-        assert row
-        row.enabled = 1
-        row.encrypted_api_key = encrypt_secret("tvly-test-key")
+    with SessionLocal() as db:
+        b = ensure_run_budget(db, "run_quota_d")
+        b.max_search_queries = 1
+        b.search_queries_used = 0
         db.commit()
-    finally:
-        db.close()
+        consume(db, b, kind="search", units=1, run_id="run_quota_d", tool_name="search_web")
+        try:
+            consume(db, b, kind="search", units=1, run_id="run_quota_d", tool_name="search_web")
+            assert False, "expected BudgetExceeded"
+        except BudgetExceeded:
+            pass
 
+    # Legacy KeyedTavilySearch still fails honestly if somehow called
     class RateLimited:
         status_code = 429
 
         def json(self):
             return {}
 
-    def fake_post(url, *args, **kwargs):
-        return RateLimited()
-
-    # Force search path to Tavily by stubbing World Bank markets empty and Tavily 429
     with patch("httpx.Client") as client_cls:
         http = MagicMock()
         http.__enter__.return_value = http
-        http.get.side_effect = Exception("wb down")
-        http.post.side_effect = fake_post
+        http.post.return_value = RateLimited()
         client_cls.return_value = http
-
-        # Direct unit: KeyedTavilySearch
         from app.providers.keyed import KeyedTavilySearch
 
         result = KeyedTavilySearch("tvly-test-key").search_markets("پسته", "ایران")
         assert result.ok is False
         assert result.error_code == "RATE_LIMITED"
-
-    get_settings.cache_clear()
 
 
 def test_admin_session_ttl_and_revoke(client, admin_token):

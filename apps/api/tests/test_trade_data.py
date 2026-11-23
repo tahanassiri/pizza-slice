@@ -264,7 +264,7 @@ def test_to_markets_ranks_records():
     assert any("چرا این کشور" in e for e in pr.markets[0].evidence)
 
 
-def test_registry_uses_trade_data_without_comtrade(monkeypatch):
+def test_registry_uses_free_web_not_mandatory_trade(monkeypatch):
     monkeypatch.setenv("PROVIDER_MODE", "auto")
     from app.core.config import get_settings
 
@@ -272,9 +272,9 @@ def test_registry_uses_trade_data_without_comtrade(monkeypatch):
     db = SessionLocal()
     try:
         bundle = resolve_providers(db)
-        assert bundle.trade_service is not None
-        assert bundle.trade_service.comtrade_public.enabled is False
-        assert bundle.trade.id == "trade_data_service"
+        # Architecture correction: no mandatory TradeDataService on agent path
+        assert bundle.trade_service is None
+        assert any("حذف" in n or "رایگان" in n or "web" in n.lower() for n in bundle.notes_fa)
     finally:
         db.close()
         get_settings.cache_clear()

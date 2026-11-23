@@ -65,8 +65,9 @@ def test_s9_1_research_plan_and_usage_audit(client, admin_token, monkeypatch):
     ]
     plan = build_research_plan(product="پسته خام", hs6=None, origin="ایران")
     assert len(plan.questions) >= 4
-    assert "get_trade_stats" in plan.tools_needed
+    assert plan.candidate_countries == []
     assert "search_web" in plan.tools_needed
+    assert "fetch_page" in plan.tools_needed
 
     with SessionLocal() as db:
         ex = ToolExecutor(db, run_id=rid, search=None, trade_service=None, llm=None)

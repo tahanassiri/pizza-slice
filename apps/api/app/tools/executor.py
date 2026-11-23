@@ -1,4 +1,4 @@
-"""Allowlisted tool executor with budget + audit."""
+"""Allowlisted tool executor — budget checked BEFORE side-effecting calls."""
 
 from __future__ import annotations
 
@@ -8,14 +8,16 @@ from sqlalchemy.orm import Session
 
 from app.agents.policy import ALLOWED_TOOLS
 from app.agents.tool_contracts import ToolCall, ToolResult
+from app.core.config import get_settings
 from app.knowledge.repository import KnowledgeRepository
+from app.schemas.contracts import Feasibility
+from app.services.feasibility_calc import default_feasibility_template, recompute
 from app.tools import budget as budget_mod
-from app.tools.official_trade import get_trade_stats
+from app.tools.credibility import assess_credibility, cross_check_claims
+from app.tools.extract import extract_claims
+from app.tools.free_web import free_web_search
 from app.tools.page_fetch import fetch_page
 from app.tools.verify_company import verify_company
-from app.tools.web_search import search_web
-from app.services.feasibility_calc import recompute, default_feasibility_template
-from app.schemas.contracts import Feasibility
 
 
 class ToolExecutor:
@@ -30,11 +32,23 @@ class ToolExecutor:
     ):
         self.db = db
         self.run_id = run_id
-        self.search = search
+        self.search = search  # optional legacy adapter; free_web is primary
         self.trade_service = trade_service
         self.llm = llm
         self.budget = budget_mod.ensure_run_budget(db, run_id)
         self.memory = KnowledgeRepository(db)
+
+    def _precheck(self, tool: str) -> None:
+        b = self.budget
+        if tool in {"search_web", "research_regulations", "research_logistics"}:
+            if b.search_queries_used >= b.max_search_queries:
+                raise budget_mod.BudgetExceeded("سقف جست‌وجوی وب تمام شد.")
+        if tool in {"fetch_page", "verify_company"}:
+            if b.pages_used >= b.max_pages:
+                raise budget_mod.BudgetExceeded("سقف خواندن صفحه تمام شد.")
+        if tool in {"classify_product"}:
+            if b.model_calls_used >= b.max_model_calls:
+                raise budget_mod.BudgetExceeded("سقف فراخوانی مدل تمام شد.")
 
     def execute(self, call: ToolCall) -> ToolResult:
         if call.tool not in ALLOWED_TOOLS:
@@ -45,6 +59,7 @@ class ToolExecutor:
                 error_code="TOOL_NOT_ALLOWED",
             )
         try:
+            self._precheck(call.tool)
             result = self._dispatch(call.tool, call.args or {})
         except budget_mod.BudgetExceeded as exc:
             return ToolResult(
@@ -61,8 +76,10 @@ class ToolExecutor:
                 error_code="TOOL_ERROR",
             )
 
-        # consume budget after success/attempt based on spent hints
-        for kind, units in (result.spent or {}).items():
+        spent = dict(result.spent or {})
+        if call.tool == "classify_product" and "model" not in spent:
+            spent["model"] = 1
+        for kind, units in spent.items():
             try:
                 budget_mod.consume(
                     self.db,
@@ -70,7 +87,7 @@ class ToolExecutor:
                     kind=kind,
                     units=int(units),
                     run_id=self.run_id,
-                    provider_id=str((result.data or {}).get("provider_id") or call.tool),
+                    provider_id=str((result.data or {}).get("provider") or call.tool),
                     tool_name=call.tool,
                     ok=result.ok,
                     detail_fa=result.message_fa[:200],
@@ -83,47 +100,60 @@ class ToolExecutor:
                     error_code=exc.code,
                     data=result.data,
                 )
-        # model calls without spent still count when classify
-        if call.tool == "classify_product" and "model" not in (result.spent or {}):
-            try:
-                budget_mod.consume(
-                    self.db,
-                    self.budget,
-                    kind="model",
-                    units=1,
-                    run_id=self.run_id,
-                    provider_id="llm",
-                    tool_name=call.tool,
-                    ok=result.ok,
-                )
-            except budget_mod.BudgetExceeded as exc:
-                return ToolResult(
-                    tool=call.tool,
-                    ok=False,
-                    message_fa=exc.message_fa,
-                    error_code=exc.code,
-                )
         return result
 
     def _dispatch(self, tool: str, args: dict[str, Any]) -> ToolResult:
+        stub = (get_settings().provider_mode or "").lower() == "stub"
         if tool == "search_web":
-            return search_web(
-                self.search,
-                query=str(args.get("query") or ""),
-                country=args.get("country"),
+            if stub:
+                return ToolResult(
+                    tool="search_web",
+                    ok=False,
+                    message_fa="حالت stub — تماس وب خارجی انجام نشد (بدون جعل نتیجه).",
+                    error_code="INSUFFICIENT_EVIDENCE",
+                    spent={"search": 1},
+                )
+            # Primary: no-cost free web. Never invent results.
+            return free_web_search(
+                str(args.get("query") or ""),
                 max_results=int(args.get("max_results") or 5),
+                country=args.get("country"),
             )
         if tool == "fetch_page":
-            before = self.budget.pages_used
-            if before >= self.budget.max_pages:
-                raise budget_mod.BudgetExceeded("سقف خواندن صفحه تمام شد.")
+            if stub:
+                return ToolResult(
+                    tool="fetch_page",
+                    ok=False,
+                    message_fa="حالت stub — واکشی صفحه انجام نشد.",
+                    error_code="PAGE_UNAVAILABLE",
+                    spent={"page": 1},
+                )
             return fetch_page(str(args.get("url") or ""))
-        if tool == "get_trade_stats":
-            return get_trade_stats(
-                self.trade_service,
+        if tool == "extract_claims":
+            return extract_claims(
+                text=str(args.get("text") or ""),
+                url=str(args.get("url") or ""),
                 product=str(args.get("product") or ""),
-                origin=str(args.get("origin") or "ایران"),
-                hs6=args.get("hs6"),
+            )
+        if tool == "assess_credibility":
+            return assess_credibility(
+                url=str(args.get("url") or ""),
+                title=str(args.get("title") or ""),
+                publisher=str(args.get("publisher") or ""),
+            )
+        if tool == "cross_check":
+            return cross_check_claims(list(args.get("claims") or []))
+        if tool == "get_trade_stats":
+            # Not a mandatory integration — honest unavailable; agent should use web discovery
+            return ToolResult(
+                tool="get_trade_stats",
+                ok=False,
+                message_fa=(
+                    "آمار تجارت سخت‌کدشده (WITS/Comtrade) از مسیر ایجنت حذف شده است. "
+                    "از جست‌وجوی وب و منابع عمومی کشف‌شده استفاده کنید."
+                ),
+                error_code="PROVIDER_UNAVAILABLE",
+                data={"hint": "use search_web + fetch_page"},
             )
         if tool == "read_memory":
             item, status = self.memory.lookup_public(
@@ -133,7 +163,7 @@ class ToolExecutor:
                 origin=args.get("origin"),
                 destination=args.get("destination"),
                 metric=args.get("metric"),
-                period=args.get("period"),
+                period=args.get("period") if args.get("period") is not None else "",
             )
             return ToolResult(
                 tool="read_memory",
@@ -156,7 +186,6 @@ class ToolExecutor:
                 },
             )
         if tool == "save_evidence":
-            # handled at runner level usually; allow writing public market analysis
             payload = args.get("payload") or {}
             if not isinstance(payload, dict):
                 return ToolResult(
@@ -165,6 +194,7 @@ class ToolExecutor:
                     message_fa="payload نامعتبر",
                     error_code="INVALID_ARGS",
                 )
+            period = args.get("period") if args.get("period") is not None else ""
             item = self.memory.save_public(
                 kind=str(args.get("kind") or "analysis"),
                 payload=payload,
@@ -173,7 +203,7 @@ class ToolExecutor:
                 origin=args.get("origin"),
                 destination=args.get("destination"),
                 metric=args.get("metric"),
-                period=args.get("period"),
+                period=period,
                 confidence=str(args.get("confidence") or "low"),
                 origin_run_id=self.run_id,
                 published_period=args.get("published_period"),
@@ -218,19 +248,19 @@ class ToolExecutor:
                 data={"hs_code": hs, "hs_confidence": conf, "product": product},
                 spent={"model": 1},
             )
-        if tool == "research_regulations":
-            # Best-effort web search; never invent legal conclusions
-            q = (
-                f"{args.get('product')} {args.get('hs') or ''} import regulations "
-                f"{args.get('destination') or ''} from {args.get('origin') or 'Iran'}"
-            )
-            return search_web(self.search, query=q, country=args.get("destination"), max_results=4)
-        if tool == "research_logistics":
-            q = (
-                f"freight shipping cost estimate {args.get('origin') or 'Iran'} to "
-                f"{args.get('destination') or ''} {args.get('product') or ''} {args.get('incoterm') or 'FOB'}"
-            )
-            return search_web(self.search, query=q, max_results=4)
+        if tool in {"research_regulations", "research_logistics"}:
+            if tool == "research_regulations":
+                q = (
+                    f"{args.get('product')} {args.get('hs') or ''} import regulations "
+                    f"{args.get('destination') or ''} from {args.get('origin') or 'Iran'}"
+                )
+            else:
+                q = (
+                    f"freight shipping cost estimate {args.get('origin') or 'Iran'} to "
+                    f"{args.get('destination') or ''} {args.get('product') or ''} "
+                    f"{args.get('incoterm') or 'FOB'}"
+                )
+            return free_web_search(q, max_results=4, country=args.get("destination"))
         return ToolResult(
             tool=tool,
             ok=False,
