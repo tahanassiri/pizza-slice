@@ -19,13 +19,13 @@ export function MarketSignalViz({ markets }: { markets: Market[] }) {
         ];
 
   return (
-    <section className="cockpit-panel overflow-hidden p-4">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-white">{fa.cockpit.signalMap}</h3>
+    <section className="cockpit-panel min-w-0 overflow-hidden p-3 sm:p-4">
+      <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+        <h3 className="truncate text-sm font-semibold text-white">{fa.cockpit.signalMap}</h3>
       </div>
-      <p className="mb-3 text-[0.7rem] text-[var(--cockpit-faint)]">{fa.cockpit.signalHint}</p>
+      <p className="mb-3 break-words text-[0.7rem] text-[var(--cockpit-faint)]">{fa.cockpit.signalHint}</p>
 
-      <div className="relative aspect-[16/10] w-full overflow-hidden rounded-xl border border-[var(--cockpit-line)] bg-[#0a1220]">
+      <div className="relative aspect-[16/10] w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-[var(--cockpit-line)] bg-[#0a1220]">
         <svg viewBox="0 0 100 100" className="h-full w-full" aria-hidden>
           <defs>
             <radialGradient id="signalGlow" cx="50%" cy="50%" r="50%">

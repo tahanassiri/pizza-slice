@@ -16,11 +16,11 @@ const map: Record<RunStatus, { label: string; className: string }> = {
 export function CockpitStatusPill({ status }: { status: RunStatus }) {
   const s = map[status];
   return (
-    <span className={`cockpit-chip ${s.className}`}>
+    <span className={`cockpit-chip max-w-[9rem] shrink-0 truncate sm:max-w-none ${s.className}`}>
       {(status === "running" || status === "queued") && (
-        <span className="h-1.5 w-1.5 rounded-full bg-current cockpit-node-live" />
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current cockpit-node-live" />
       )}
-      {s.label}
+      <span className="truncate">{s.label}</span>
     </span>
   );
 }

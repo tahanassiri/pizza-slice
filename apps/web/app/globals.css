@@ -289,16 +289,13 @@ body::after {
 .cockpit-shell {
   position: relative;
   z-index: 1;
+  box-sizing: border-box;
+  width: 100%;
   min-height: 100%;
   min-width: 0;
   max-width: 100%;
-  overflow-x: hidden;
-  padding: 1rem 0.75rem 5.5rem;
-}
-
-.cockpit,
-.cockpit * {
-  max-width: 100%;
+  overflow-x: clip;
+  padding: 0.75rem 0.75rem 5.75rem;
 }
 
 .cockpit img,
@@ -315,9 +312,34 @@ body::after {
   word-break: break-all;
 }
 
+/* Timeline / rails: contain intrinsic min-width so grid/flex don't blow the viewport */
+.cockpit-shell > *,
+.cockpit-shell .cockpit-panel,
+.cockpit-rail,
+.cockpit-timeline {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.cockpit-rail-scroll {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 0.25rem;
+  max-width: 100%;
+}
+
 @media (min-width: 1024px) {
   .cockpit-shell {
     padding: 1.25rem 1.75rem 2rem;
+  }
+
+  .cockpit-rail-scroll {
+    flex-direction: column;
+    overflow: visible;
+    padding-bottom: 0;
   }
 }
 
@@ -327,6 +349,9 @@ body::after {
   border-radius: 16px;
   backdrop-filter: blur(14px);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .cockpit-panel-solid {

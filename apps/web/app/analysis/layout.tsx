@@ -4,7 +4,7 @@ export default function AnalysisLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="cockpit fixed inset-0 z-40 overflow-x-hidden overflow-y-auto overscroll-contain">
+    <div className="cockpit fixed inset-0 z-40 w-full max-w-[100vw] overflow-x-clip overflow-y-auto overscroll-contain">
       {children}
     </div>
   );

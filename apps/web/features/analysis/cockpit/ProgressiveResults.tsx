@@ -26,10 +26,10 @@ export function ProgressiveResults({
     status === "provider_unavailable" || status === "rate_limited" || status === "failed";
 
   return (
-    <section className="cockpit-panel p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-white">{fa.cockpit.progressive}</h3>
-        <span className="text-[0.7rem] text-[var(--cockpit-muted)]">
+    <section className="cockpit-panel min-w-0 overflow-hidden p-3 sm:p-4">
+      <div className="mb-3 flex min-w-0 items-center justify-between gap-2">
+        <h3 className="truncate text-sm font-semibold text-white">{fa.cockpit.progressive}</h3>
+        <span className="shrink-0 text-[0.7rem] text-[var(--cockpit-muted)]">
           {fa.cockpit.marketsReady}: {markets.length}
         </span>
       </div>

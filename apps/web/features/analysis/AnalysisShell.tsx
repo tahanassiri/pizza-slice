@@ -248,13 +248,13 @@ export function AnalysisShell({
       ) : null}
 
       {tab === "timeline" ? (
-        <div className="space-y-4">
+        <div className="cockpit-timeline min-w-0 space-y-4">
           <ResearchHero run={run} latest={latest} />
 
-          <div className="grid gap-4 lg:grid-cols-[240px_minmax(0,1.2fr)_minmax(0,0.9fr)]">
+          <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,240px)_minmax(0,1.2fr)_minmax(0,0.9fr)]">
             <PhaseRail events={events} runStatus={run.status} />
             <ActivityFeed events={events} />
-            <div className="space-y-4">
+            <div className="min-w-0 space-y-4">
               <ProgressiveResults
                 markets={markets}
                 status={run.status}
@@ -275,8 +275,8 @@ export function AnalysisShell({
           </div>
         </div>
       ) : (
-        <div className="study-surface space-y-4 p-4 sm:p-5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="study-surface min-w-0 space-y-4 overflow-x-clip p-3 sm:p-5">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
             <div>
               <p className="text-[0.65rem] uppercase tracking-[0.14em] text-[#0cb6aa]">
                 intelligence pane

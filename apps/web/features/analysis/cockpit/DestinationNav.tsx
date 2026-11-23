@@ -20,10 +20,10 @@ export function DestinationNav({
 }) {
   return (
     <nav
-      className="no-print fixed inset-x-0 bottom-0 z-50 border-t border-[var(--cockpit-line)] bg-[#0b1426]/95 backdrop-blur-md lg:static lg:z-auto lg:mt-4 lg:rounded-2xl lg:border lg:bg-[var(--cockpit-panel)]"
+      className="no-print fixed inset-x-0 bottom-0 z-50 w-full max-w-[100vw] overflow-x-clip border-t border-[var(--cockpit-line)] bg-[#0b1426]/95 backdrop-blur-md lg:static lg:z-auto lg:mt-4 lg:max-w-none lg:overflow-visible lg:rounded-2xl lg:border lg:bg-[var(--cockpit-panel)]"
       aria-label={fa.cockpit.destinations}
     >
-      <div className="mx-auto grid w-full max-w-6xl grid-cols-5 gap-0.5 px-1 py-1.5 sm:gap-2 sm:px-2 sm:py-2">
+      <div className="mx-auto grid w-full min-w-0 max-w-6xl grid-cols-5 gap-0.5 px-1 py-1.5 sm:gap-2 sm:px-2 sm:py-2">
         {ITEMS.map((id) => {
           const state = readiness[id] ?? "waiting";
           const isActive = active === id;

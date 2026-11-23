@@ -5,12 +5,12 @@ import { CockpitStatusPill } from "./CockpitStatusPill";
 
 export function CockpitHeader({ run }: { run: Run }) {
   return (
-    <header className="mb-5 flex flex-wrap items-start justify-between gap-4 border-b border-[var(--cockpit-line)] pb-5">
-      <div className="min-w-0 space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
+    <header className="mb-4 flex min-w-0 flex-wrap items-start justify-between gap-3 border-b border-[var(--cockpit-line)] pb-4 sm:mb-5 sm:gap-4 sm:pb-5">
+      <div className="min-w-0 flex-1 space-y-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Link
             href="/"
-            className="font-display text-xl font-extrabold tracking-tight text-white sm:text-2xl"
+            className="font-display shrink-0 text-lg font-extrabold tracking-tight text-white sm:text-2xl"
           >
             {fa.brand}
           </Link>
@@ -24,14 +24,14 @@ export function CockpitHeader({ run }: { run: Run }) {
             </>
           ) : null}
         </div>
-        <div>
+        <div className="min-w-0">
           <p className="text-[0.65rem] font-medium uppercase tracking-[0.18em] text-[var(--cockpit-gold)]">
             {fa.cockpit.cockpitLabel}
           </p>
-          <h1 className="mt-1 truncate text-2xl font-semibold text-white sm:text-3xl">
+          <h1 className="mt-1 truncate text-xl font-semibold text-white sm:text-3xl">
             {run.product}
           </h1>
-          <p className="mt-1 text-sm text-[var(--cockpit-muted)]">
+          <p className="mt-1 break-words text-sm text-[var(--cockpit-muted)]">
             {run.origin_country}
             {run.guessed_hs_code ? (
               <>
@@ -46,7 +46,7 @@ export function CockpitHeader({ run }: { run: Run }) {
         </div>
       </div>
 
-      <div className="flex flex-col items-stretch gap-2 sm:items-end">
+      <div className="flex w-full min-w-0 flex-row flex-wrap items-center justify-between gap-2 sm:w-auto sm:flex-col sm:items-end">
         <CockpitStatusPill status={run.status} />
         <Link
           href="/"

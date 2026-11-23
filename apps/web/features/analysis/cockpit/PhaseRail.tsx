@@ -75,44 +75,45 @@ export function PhaseRail({
   );
 
   return (
-    <aside className="cockpit-panel p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-white">{fa.cockpit.phaseRail}</h3>
-        <span className="text-[0.65rem] text-[var(--cockpit-faint)]">
+    <aside className="cockpit-panel cockpit-rail min-w-0 p-3 sm:p-4">
+      <div className="mb-3 flex min-w-0 items-center justify-between gap-2">
+        <h3 className="truncate text-sm font-semibold text-white">{fa.cockpit.phaseRail}</h3>
+        <span className="shrink-0 text-[0.65rem] text-[var(--cockpit-faint)]">
           {fa.status[runStatus]}
         </span>
       </div>
 
-      <ol className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
+      {/* Mobile: vertical stack (fits ~390px). Desktop: same column via CSS. */}
+      <ol className="flex min-w-0 flex-col gap-1">
         {items.map((item, idx) => (
-          <li key={item.phase} className="min-w-[7.5rem] max-w-[80vw] shrink-0 lg:min-w-0 lg:max-w-none">
+          <li key={item.phase} className="min-w-0">
             <button
               type="button"
-              className="w-full rounded-xl border border-transparent p-2 text-right transition hover:border-[var(--cockpit-line)] hover:bg-white/[0.03]"
+              className="w-full min-w-0 rounded-xl border border-transparent p-2 text-right transition hover:border-[var(--cockpit-line)] hover:bg-white/[0.03]"
               onClick={() => setOpen(open === item.phase ? null : item.phase)}
             >
-              <div className="flex items-center gap-3">
+              <div className="flex min-w-0 items-center gap-3">
                 <span
                   className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-bold ${nodeClass[item.state]}`}
                 >
                   {nodeGlyph(item.state, idx)}
                 </span>
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-white">
                     {fa.phase[item.phase]}
                   </p>
-                  <p className="text-[0.65rem] text-[var(--cockpit-muted)]">
+                  <p className="truncate text-[0.65rem] text-[var(--cockpit-muted)]">
                     {stateLabel[item.state]}
                   </p>
                 </div>
               </div>
             </button>
             {open === item.phase ? (
-              <div className="mt-1 rounded-xl border border-[var(--cockpit-line)] bg-black/20 px-3 py-2 text-xs text-[var(--cockpit-muted)]">
+              <div className="mt-1 break-words rounded-xl border border-[var(--cockpit-line)] bg-black/20 px-3 py-2 text-xs text-[var(--cockpit-muted)]">
                 <p className="mb-1 font-medium text-white">
                   {item.detail ? fa.cockpit.openDetails : fa.cockpit.waitingPhase}
                 </p>
-                <p>{item.detail?.message_fa ?? "رویدادی برای این مرحله ثبت نشده."}</p>
+                <p className="break-words">{item.detail?.message_fa ?? "رویدادی برای این مرحله ثبت نشده."}</p>
                 {item.detail ? (
                   <time className="mt-1 block text-[var(--cockpit-faint)]" dir="ltr">
                     {new Date(item.detail.timestamp).toLocaleString("fa-IR")}

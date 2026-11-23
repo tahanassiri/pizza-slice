@@ -42,36 +42,36 @@ export function ResearchHero({
 
   return (
     <section
-      className={`cockpit-panel relative overflow-hidden p-5 sm:p-7 ${live ? "cockpit-hero-scan" : ""}`}
+      className={`cockpit-panel relative min-w-0 overflow-hidden p-4 sm:p-7 ${live ? "cockpit-hero-scan" : ""}`}
     >
       <div
         className={`pointer-events-none absolute inset-0 bg-gradient-to-l ${tone(run.status)}`}
         aria-hidden
       />
-      <div className="absolute inset-y-4 end-0 w-1 rounded-full bg-[var(--cockpit-gold)]/80" aria-hidden />
+      <div className="absolute inset-y-4 end-0 hidden w-1 rounded-full bg-[var(--cockpit-gold)]/80 sm:block" aria-hidden />
 
-      <div className="relative z-[1] grid gap-5 lg:grid-cols-[1fr_auto] lg:items-end">
-        <div className="max-w-3xl space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
+      <div className="relative z-[1] grid min-w-0 gap-4 sm:gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+        <div className="min-w-0 max-w-3xl space-y-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span
-              className={`cockpit-chip ${
+              className={`cockpit-chip max-w-full ${
                 blocked
                   ? "border-[color-mix(in_srgb,var(--cockpit-danger)_50%,transparent)] bg-[var(--cockpit-danger-soft)] text-[var(--cockpit-danger)]"
                   : "cockpit-chip-live"
               }`}
             >
-              {live ? <span className="h-1.5 w-1.5 rounded-full bg-current cockpit-node-live" /> : null}
-              {heroCopy(run.status)}
+              {live ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current cockpit-node-live" /> : null}
+              <span className="truncate">{heroCopy(run.status)}</span>
             </span>
             {latest ? (
-              <span className="text-[0.7rem] text-[var(--cockpit-faint)]">
+              <span className="max-w-full truncate text-[0.7rem] text-[var(--cockpit-faint)]">
                 {fa.cockpit.currentBeat} · {fa.phase[latest.phase] ?? latest.phase}
               </span>
             ) : null}
           </div>
 
           <h2
-            className={`break-words text-xl font-semibold leading-snug tracking-tight sm:text-4xl ${
+            className={`break-words text-lg font-semibold leading-snug tracking-tight sm:text-4xl ${
               blocked ? "text-[var(--cockpit-danger)]" : "text-white"
             }`}
           >
@@ -79,16 +79,16 @@ export function ResearchHero({
           </h2>
 
           {run.error ? (
-            <p className="text-sm text-[var(--cockpit-danger)]">{run.error.message_fa}</p>
+            <p className="break-words text-sm text-[var(--cockpit-danger)]">{run.error.message_fa}</p>
           ) : (
-            <p className="max-w-2xl text-sm leading-7 text-[var(--cockpit-muted)]">
+            <p className="max-w-2xl break-words text-sm leading-7 text-[var(--cockpit-muted)]">
               مسیر شناخت محصول تا پیشنهاد بازار به‌صورت مرحله‌ای به‌روز می‌شود. این پیش‌نمایش
               آزمایشی است و ادعای تحقیق زنده ندارد.
             </p>
           )}
         </div>
 
-        <div className="min-w-0 max-w-full rounded-2xl border border-[var(--cockpit-line-strong)] bg-black/35 px-3 py-3 text-left shadow-[0_0_40px_rgba(12,182,170,0.08)] sm:px-4" dir="ltr">
+        <div className="min-w-0 w-full max-w-full rounded-2xl border border-[var(--cockpit-line-strong)] bg-black/35 px-3 py-3 text-left shadow-[0_0_40px_rgba(12,182,170,0.08)] sm:w-auto sm:px-4" dir="ltr">
           <p className="text-[0.65rem] uppercase tracking-[0.18em] text-[var(--cockpit-faint)]">
             run
           </p>
@@ -98,7 +98,7 @@ export function ResearchHero({
               <p className="mt-2 text-[0.65rem] uppercase tracking-[0.18em] text-[var(--cockpit-faint)]">
                 fixture
               </p>
-              <p className="text-xs text-[var(--cockpit-muted)]">{run.fixture_id}</p>
+              <p className="break-all text-xs text-[var(--cockpit-muted)]">{run.fixture_id}</p>
             </>
           ) : null}
         </div>

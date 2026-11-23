@@ -21,34 +21,36 @@ export function ActivityFeed({ events }: { events: RunEvent[] }) {
   const ordered = [...events].reverse();
 
   return (
-    <section className="cockpit-panel flex min-h-0 flex-col p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-white">{fa.cockpit.activityFeed}</h3>
-        <span className="cockpit-chip-mock cockpit-chip">{fa.mockPreviewBadge}</span>
+    <section className="cockpit-panel flex min-h-0 min-w-0 flex-col overflow-hidden p-3 sm:p-4">
+      <div className="mb-3 flex min-w-0 items-center justify-between gap-2">
+        <h3 className="truncate text-sm font-semibold text-white">{fa.cockpit.activityFeed}</h3>
+        <span className="cockpit-chip-mock cockpit-chip shrink-0">{fa.mockPreviewBadge}</span>
       </div>
-      <ol className="max-h-[28rem] space-y-2 overflow-y-auto pe-1">
+      <ol className="max-h-[28rem] min-w-0 space-y-2 overflow-x-hidden overflow-y-auto pe-1">
         {ordered.map((ev, idx) => {
           const open = expanded === ev.event_id;
           return (
             <li
               key={ev.event_id}
-              className="animate-fade-up rounded-xl border border-[var(--cockpit-line)] bg-black/15 p-3"
+              className="animate-fade-up min-w-0 rounded-xl border border-[var(--cockpit-line)] bg-black/15 p-3"
               style={{ animationDelay: `${Math.min(idx, 8) * 35}ms` }}
             >
               <button
                 type="button"
-                className="flex w-full items-start justify-between gap-3 text-right"
+                className="flex w-full min-w-0 items-start justify-between gap-2 text-right sm:gap-3"
                 onClick={() => setExpanded(open ? null : ev.event_id)}
               >
-                <div className="min-w-0 space-y-1">
-                  <p className="text-sm font-medium text-white">{ev.message_fa}</p>
-                  <p className="text-[0.7rem] text-[var(--cockpit-faint)]">
+                <div className="min-w-0 flex-1 space-y-1">
+                  <p className="break-words text-sm font-medium text-white">{ev.message_fa}</p>
+                  <p className="truncate text-[0.7rem] text-[var(--cockpit-faint)]">
                     {fa.phase[ev.phase] ?? ev.phase}
                     {" · "}
                     <time dir="ltr">{new Date(ev.timestamp).toLocaleString("fa-IR")}</time>
                   </p>
                 </div>
-                <CockpitStatusPill status={ev.status} />
+                <span className="shrink-0">
+                  <CockpitStatusPill status={ev.status} />
+                </span>
               </button>
               {open ? (
                 <div className="mt-3 space-y-2 border-t border-[var(--cockpit-line)] pt-3">
