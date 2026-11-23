@@ -71,7 +71,7 @@ export function ResearchHero({
           </div>
 
           <h2
-            className={`text-2xl font-semibold leading-snug tracking-tight sm:text-4xl ${
+            className={`break-words text-xl font-semibold leading-snug tracking-tight sm:text-4xl ${
               blocked ? "text-[var(--cockpit-danger)]" : "text-white"
             }`}
           >
@@ -88,11 +88,11 @@ export function ResearchHero({
           )}
         </div>
 
-        <div className="rounded-2xl border border-[var(--cockpit-line-strong)] bg-black/35 px-4 py-3 text-left shadow-[0_0_40px_rgba(12,182,170,0.08)]" dir="ltr">
+        <div className="min-w-0 max-w-full rounded-2xl border border-[var(--cockpit-line-strong)] bg-black/35 px-3 py-3 text-left shadow-[0_0_40px_rgba(12,182,170,0.08)] sm:px-4" dir="ltr">
           <p className="text-[0.65rem] uppercase tracking-[0.18em] text-[var(--cockpit-faint)]">
             run
           </p>
-          <p className="font-mono text-sm text-[var(--cockpit-teal)]">{run.id}</p>
+          <p className="break-all font-mono text-xs text-[var(--cockpit-teal)] sm:text-sm">{run.id}</p>
           {run.is_mock && run.fixture_id ? (
             <>
               <p className="mt-2 text-[0.65rem] uppercase tracking-[0.18em] text-[var(--cockpit-faint)]">

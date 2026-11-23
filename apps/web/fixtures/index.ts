@@ -495,6 +495,68 @@ export const adminMockSettings = {
     },
   ],
   selected_model: "gemini-2.0-flash",
+  llm_models: [
+    {
+      id: "gemini-2.0-flash",
+      label: "Gemini 2.0 Flash",
+      provider: "google",
+      group: "google",
+      group_label_fa: "گوگل (Gemini)",
+      is_flash: true,
+      has_key_configured: false,
+    },
+    {
+      id: "gemini-2.5-pro",
+      label: "Gemini 2.5 Pro",
+      provider: "google",
+      group: "google",
+      group_label_fa: "گوگل (Gemini)",
+      has_key_configured: false,
+    },
+    {
+      id: "gpt-4o",
+      label: "GPT-4o",
+      provider: "openai",
+      group: "openai",
+      group_label_fa: "اوپن‌ای‌آی (GPT)",
+      has_key_configured: false,
+    },
+    {
+      id: "deepseek-chat",
+      label: "DeepSeek Chat",
+      provider: "deepseek",
+      group: "deepseek",
+      group_label_fa: "دیپ‌سیک (DeepSeek)",
+      has_key_configured: false,
+    },
+  ],
+  llm_groups: [
+    {
+      id: "google",
+      label_fa: "گوگل (Gemini)",
+      models: [
+        { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash", provider: "google", is_flash: true },
+        { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", provider: "google" },
+      ],
+    },
+    {
+      id: "openai",
+      label_fa: "اوپن‌ای‌آی (GPT)",
+      models: [{ id: "gpt-4o", label: "GPT-4o", provider: "openai" }],
+    },
+    {
+      id: "deepseek",
+      label_fa: "دیپ‌سیک (DeepSeek)",
+      models: [{ id: "deepseek-chat", label: "DeepSeek Chat", provider: "deepseek" }],
+    },
+    {
+      id: "flash",
+      label_fa: "مدل‌های Flash",
+      models: [
+        { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash", provider: "google", is_flash: true },
+      ],
+    },
+  ],
   connection_message_fa: "آزمون اتصال نمایشی — بدون درخواست واقعی",
   error_history: [
     {

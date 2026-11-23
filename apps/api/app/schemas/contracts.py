@@ -224,12 +224,33 @@ class ProviderUpdateIn(BaseModel):
     api_key: str | None = None  # plaintext only in request body; stored encrypted
 
 
+class LlmModelOptionOut(BaseModel):
+    id: str
+    label: str
+    provider: str
+    group: str
+    group_label_fa: str
+    is_flash: bool = False
+    has_key_configured: bool = False
+
+
 class AdminSettingsOut(BaseModel):
     providers: list[ProviderConfigOut]
     selected_model: str
+    llm_models: list[LlmModelOptionOut] = []
+    llm_groups: list[dict] = []
     connection_message_fa: str
     error_history: list[dict[str, str]]
     is_mock_ui: bool = False
+
+
+class ModelSelectIn(BaseModel):
+    model: str
+
+
+class ModelKeyIn(BaseModel):
+    model: str
+    api_key: str | None = None  # empty/null clears this version's key only
 
 
 class TestConnectionIn(BaseModel):

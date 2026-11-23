@@ -36,6 +36,8 @@
 
 html {
   direction: rtl;
+  overflow-x: hidden;
+  max-width: 100%;
 }
 
 body {
@@ -44,7 +46,11 @@ body {
   font-family: var(--font-sans);
   font-weight: 400;
   min-height: 100vh;
+  max-width: 100%;
+  overflow-x: hidden;
   text-rendering: optimizeLegibility;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 /* Display family (weight via Tailwind font-bold / font-extrabold / font-black) */
@@ -89,7 +95,7 @@ body::after {
 
 @layer components {
   .nova-container {
-    @apply mx-auto w-full max-w-6xl px-4 sm:px-6;
+    @apply mx-auto w-full min-w-0 max-w-6xl px-3 sm:px-6;
   }
 
   .nova-panel {
@@ -284,7 +290,29 @@ body::after {
   position: relative;
   z-index: 1;
   min-height: 100%;
-  padding: 1rem 1rem 5.5rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  padding: 1rem 0.75rem 5.5rem;
+}
+
+.cockpit,
+.cockpit * {
+  max-width: 100%;
+}
+
+.cockpit img,
+.cockpit svg,
+.cockpit canvas,
+.cockpit video {
+  max-width: 100%;
+  height: auto;
+}
+
+.cockpit .font-mono,
+.font-mono {
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 
 @media (min-width: 1024px) {

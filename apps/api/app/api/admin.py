@@ -15,6 +15,8 @@ from app.schemas.contracts import (
     AdminLoginIn,
     AdminLoginOut,
     AdminSettingsOut,
+    ModelKeyIn,
+    ModelSelectIn,
     ProviderConfigOut,
     ProviderUpdateIn,
     TestConnectionIn,
@@ -57,19 +59,35 @@ def patch_provider(
 @router.get("/model")
 def get_model(db: Session = Depends(get_db), _auth: str = Depends(require_admin)):
     view = admin_service.settings_view(db)
-    return {"selected_model": view.selected_model}
+    return {
+        "selected_model": view.selected_model,
+        "llm_models": view.llm_models,
+        "llm_groups": view.llm_groups,
+    }
 
 
 @router.put("/model")
 def put_model(
-    body: dict,
+    body: ModelSelectIn,
     db: Session = Depends(get_db),
     _auth: str = Depends(require_admin),
 ):
-    model = str(body.get("model") or "").strip()
+    model = body.model.strip()
     if not model:
         raise AppError("INVALID_MODEL", "مدل نامعتبر است.")
     return {"selected_model": admin_service.set_model(db, model)}
+
+
+@router.put("/model/key")
+def put_model_key(
+    body: ModelKeyIn,
+    db: Session = Depends(get_db),
+    _auth: str = Depends(require_admin),
+):
+    model = body.model.strip()
+    if not model:
+        raise AppError("INVALID_MODEL", "مدل نامعتبر است.")
+    return admin_service.set_model_api_key(db, model, body.api_key)
 
 
 @router.get("/usage")

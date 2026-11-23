@@ -5,7 +5,7 @@ import { resolveSource } from "@/lib/api/client";
 export default function HomePage() {
   const isMock = resolveSource() === "mock";
   return (
-    <div className="relative -mx-4 sm:-mx-6 -my-6 sm:-my-10 min-h-[calc(100vh-3.5rem)] overflow-hidden px-4 sm:px-6">
+    <div className="relative -mx-4 max-w-[100vw] sm:-mx-6 -my-6 sm:-my-10 min-h-[calc(100vh-3.5rem)] overflow-x-hidden px-4 sm:px-6">
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0"
@@ -24,7 +24,7 @@ export default function HomePage() {
             </div>
           ) : null}
 
-          <p className="font-display text-5xl font-black tracking-tight text-white sm:text-6xl md:text-7xl">
+          <p className="font-display text-4xl font-black tracking-tight text-white sm:text-6xl md:text-7xl">
             {fa.brand}
           </p>
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-[var(--mock)]">

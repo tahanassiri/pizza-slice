@@ -9,11 +9,13 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.security import decrypt_secret
-from app.models.entities import AppMeta, ProviderSetting
+from app.models.entities import ProviderSetting
 from app.providers.free_wiki import FreeWikiSearchProvider
 from app.providers.free_worldbank import FreeWorldBankTradeProvider
-from app.providers.keyed import KeyedGeminiLLM, KeyedTavilySearch
+from app.providers.keyed import KeyedTavilySearch, build_llm
+from app.providers.llm_catalog import models_by_id
 from app.providers.stubs import StubLLMProvider, StubSearchProvider, StubTradeProvider
+from app.services import admin_service
 from app.services.admin_service import ensure_providers
 
 
@@ -53,7 +55,6 @@ def resolve_providers(db: Session) -> ProviderBundle:
             notes_fa=["حالت stub اجباری — بدون تماس خارجی"],
         )
 
-    # Free path always available in auto/live
     trade = FreeWorldBankTradeProvider()
     wiki = FreeWikiSearchProvider()
     notes.append("آمار بازار: World Bank رایگان")
@@ -68,14 +69,17 @@ def resolve_providers(db: Session) -> ProviderBundle:
         search = wiki
         notes.append("Tavily بدون کلید — فقط مسیر رایگان/stub صادقانه")
 
-    gemini_key = _key_for(db, "gemini")
-    selected = db.get(AppMeta, "selected_model")
-    model = selected.value if selected else "gemini-2.0-flash"
-    if gemini_key:
-        llm: object = KeyedGeminiLLM(gemini_key, model=model)
-        notes.append("طبقه‌بندی HS: Gemini (کلید پیکربندی‌شده)")
+    model = admin_service.get_selected_model(db)
+    meta = models_by_id().get(model)
+    model_key = admin_service.get_model_api_key(db, model)
+    if meta and model_key:
+        llm: object = build_llm(meta.provider, model_key, model)
+        notes.append(f"LLM فعال: {model} ({meta.provider}) — کلید نسخهٔ مدل")
     else:
         llm = StubLLMProvider()
-        notes.append("Gemini بدون کلید — HS فقط از ورودی کاربر یا unknown")
+        if not meta:
+            notes.append(f"مدل «{model}» در فهرست نیست — LLM stub")
+        else:
+            notes.append(f"کلید نسخه «{model}» نیست — HS فقط از ورودی کاربر یا unknown")
 
     return ProviderBundle(search=search, trade=trade, llm=llm, mode=mode, notes_fa=notes)

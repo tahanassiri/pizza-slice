@@ -202,9 +202,32 @@ export interface ProviderConfig {
   used_today?: number;
 }
 
+export interface LlmModelOption {
+  id: string;
+  label: string;
+  provider: string;
+  group: string;
+  group_label_fa: string;
+  is_flash?: boolean;
+  has_key_configured: boolean;
+}
+
+export interface LlmModelGroup {
+  id: string;
+  label_fa: string;
+  models: {
+    id: string;
+    label: string;
+    provider: string;
+    is_flash?: boolean;
+  }[];
+}
+
 export interface AdminSettingsView {
   providers: ProviderConfig[];
   selected_model: string;
+  llm_models?: LlmModelOption[];
+  llm_groups?: LlmModelGroup[];
   connection_message_fa: string;
   error_history: { at: string; message_fa: string }[];
   is_mock_ui: boolean;

@@ -237,7 +237,7 @@ export function AnalysisShell({
   const latest = events[events.length - 1];
 
   return (
-    <div className="cockpit-shell mx-auto max-w-6xl">
+    <div className="cockpit-shell mx-auto w-full min-w-0 max-w-6xl">
       <CockpitHeader run={run} />
 
       {connectionLost ? (

@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     orchestrator_step_delay_ms: int = 120
     # auto = free World Bank/Wiki + keyed providers when configured; stub = no external calls
     provider_mode: str = "auto"
+    # Default active LLM version when AppMeta has no selection (admin can override)
+    default_llm_model: str = "gemini-2.0-flash"
 
     @property
     def cors_origin_list(self) -> list[str]:

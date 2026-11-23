@@ -85,7 +85,7 @@ export function PhaseRail({
 
       <ol className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
         {items.map((item, idx) => (
-          <li key={item.phase} className="min-w-[9.5rem] lg:min-w-0">
+          <li key={item.phase} className="min-w-[7.5rem] max-w-[80vw] shrink-0 lg:min-w-0 lg:max-w-none">
             <button
               type="button"
               className="w-full rounded-xl border border-transparent p-2 text-right transition hover:border-[var(--cockpit-line)] hover:bg-white/[0.03]"

@@ -145,6 +145,18 @@ class KeyedTavilySearch:
             )
 
 
+def _digits_hs(text: str) -> tuple[str | None, str]:
+    digits = "".join(ch for ch in text if ch.isdigit())[:6]
+    if len(digits) == 6:
+        return digits, "low"
+    return None, "unknown"
+
+
+_HS_PROMPT = (
+    "Return ONLY a 6-digit HS code guess for this product, or UNKNOWN. Product: {product}"
+)
+
+
 class KeyedGeminiLLM:
     id = "gemini"
 
@@ -156,24 +168,18 @@ class KeyedGeminiLLM:
     def classify_hs(self, product: str, hs_hint: str | None) -> tuple[str | None, str]:
         if hs_hint and hs_hint.strip():
             return hs_hint.strip(), "medium"
-        # Live-capable: only call when key present. Keep response constrained.
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self.model}:generateContent?key={self.api_key}"
         )
-        prompt = (
-            "Return ONLY a 6-digit HS code guess for this product, or UNKNOWN. "
-            f"Product: {product}"
-        )
+        prompt = _HS_PROMPT.format(product=product)
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 r = client.post(
                     url,
                     json={"contents": [{"parts": [{"text": prompt}]}]},
                 )
-            if r.status_code == 429:
-                return None, "unknown"
-            if r.status_code != 200:
+            if r.status_code == 429 or r.status_code != 200:
                 return None, "unknown"
             text = (
                 r.json()
@@ -182,9 +188,70 @@ class KeyedGeminiLLM:
                 .get("parts", [{}])[0]
                 .get("text", "")
             )
-            digits = "".join(ch for ch in text if ch.isdigit())[:6]
-            if len(digits) == 6:
-                return digits, "low"
-            return None, "unknown"
+            return _digits_hs(text)
         except Exception:
             return None, "unknown"
+
+
+class KeyedOpenAICompatLLM:
+    """OpenAI Chat Completions — also used for DeepSeek (compatible base URL)."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        *,
+        provider_id: str = "openai",
+        base_url: str = "https://api.openai.com/v1",
+        timeout: float = 30.0,
+    ):
+        self.id = provider_id
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    def classify_hs(self, product: str, hs_hint: str | None) -> tuple[str | None, str]:
+        if hs_hint and hs_hint.strip():
+            return hs_hint.strip(), "medium"
+        prompt = _HS_PROMPT.format(product=product)
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                r = client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0,
+                        "max_tokens": 32,
+                    },
+                )
+            if r.status_code == 429 or r.status_code != 200:
+                return None, "unknown"
+            text = (
+                (r.json().get("choices") or [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                or ""
+            )
+            return _digits_hs(text)
+        except Exception:
+            return None, "unknown"
+
+
+def build_llm(provider: str, api_key: str, model: str):
+    if provider == "google":
+        return KeyedGeminiLLM(api_key, model=model)
+    if provider == "openai":
+        return KeyedOpenAICompatLLM(
+            api_key, model, provider_id="openai", base_url="https://api.openai.com/v1"
+        )
+    if provider == "deepseek":
+        return KeyedOpenAICompatLLM(
+            api_key,
+            model,
+            provider_id="deepseek",
+            base_url="https://api.deepseek.com/v1",
+        )
+    return KeyedGeminiLLM(api_key, model=model)

@@ -5,10 +5,13 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.security import encrypt_secret, mask_secret
 from app.models.entities import AppMeta, ProviderSetting
+from app.providers.llm_catalog import all_models, catalog_grouped, models_by_id
 from app.schemas.contracts import (
     AdminSettingsOut,
+    LlmModelOptionOut,
     ProviderConfigOut,
     ProviderUpdateIn,
     TestConnectionOut,
@@ -20,6 +23,16 @@ DEFAULT_PROVIDERS = [
     ("comtrade", "UN Comtrade", None, None),
     ("gemini", "Gemini", "gemini-2.0-flash", None),
 ]
+
+LLM_KEY_PREFIX = "llm_model_key::"
+
+
+def _default_model() -> str:
+    return (get_settings().default_llm_model or "gemini-2.0-flash").strip()
+
+
+def _model_key_meta(model_id: str) -> str:
+    return f"{LLM_KEY_PREFIX}{model_id}"
 
 
 def ensure_providers(db: Session) -> None:
@@ -35,20 +48,79 @@ def ensure_providers(db: Session) -> None:
                 model=model,
                 encrypted_api_key=None,
                 status="untested",
-                usage_note_fa="کلید فقط سمت سرور ذخیره می‌شود؛ در فاز B بدون تماس پولی",
+                usage_note_fa="کلید فقط سمت سرور ذخیره می‌شود",
                 daily_limit=limit,
                 used_today=0,
             )
         )
+    default = _default_model()
     if not db.get(AppMeta, "selected_model"):
-        db.add(AppMeta(key="selected_model", value="gemini-2.0-flash"))
+        db.add(AppMeta(key="selected_model", value=default))
     db.commit()
+
+
+def get_selected_model(db: Session) -> str:
+    ensure_providers(db)
+    selected = db.get(AppMeta, "selected_model")
+    if selected and selected.value.strip():
+        return selected.value.strip()
+    return _default_model()
+
+
+def get_model_api_key(db: Session, model_id: str) -> str | None:
+    """Plaintext key for a specific model version, or legacy gemini provider key."""
+    ensure_providers(db)
+    row = db.get(AppMeta, _model_key_meta(model_id))
+    if row and row.value:
+        from app.core.security import decrypt_secret
+
+        plain = decrypt_secret(row.value)
+        if plain:
+            return plain
+    # Backward compat: gemini-* can fall back to provider-level gemini key
+    meta = models_by_id().get(model_id)
+    if meta and meta.provider == "google":
+        prow = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == "gemini"))
+        if prow and prow.encrypted_api_key:
+            from app.core.security import decrypt_secret
+
+            plain = decrypt_secret(prow.encrypted_api_key)
+            if plain:
+                return plain
+    return None
+
+
+def model_has_key(db: Session, model_id: str) -> bool:
+    row = db.get(AppMeta, _model_key_meta(model_id))
+    if row and row.value:
+        return True
+    meta = models_by_id().get(model_id)
+    if meta and meta.provider == "google":
+        prow = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == "gemini"))
+        if prow and prow.encrypted_api_key:
+            return True
+    return False
+
+
+def llm_models_view(db: Session) -> list[LlmModelOptionOut]:
+    ensure_providers(db)
+    return [
+        LlmModelOptionOut(
+            id=m.id,
+            label=m.label,
+            provider=m.provider,
+            group=m.group,
+            group_label_fa=m.group_label_fa,
+            is_flash=m.is_flash,
+            has_key_configured=model_has_key(db, m.id),
+        )
+        for m in all_models()
+    ]
 
 
 def settings_view(db: Session) -> AdminSettingsOut:
     ensure_providers(db)
     rows = list(db.scalars(select(ProviderSetting).order_by(ProviderSetting.id)).all())
-    selected = db.get(AppMeta, "selected_model")
     providers = [
         ProviderConfigOut(
             id=r.provider_id,
@@ -63,14 +135,17 @@ def settings_view(db: Session) -> AdminSettingsOut:
         )
         for r in rows
     ]
+    selected = get_selected_model(db)
     return AdminSettingsOut(
         providers=providers,
-        selected_model=selected.value if selected else "gemini-2.0-flash",
-        connection_message_fa="کلیدها رمزنگاری‌شده سمت سرورند؛ هیچ کلیدی به فرانت برنمی‌گردد.",
+        selected_model=selected,
+        llm_models=llm_models_view(db),
+        llm_groups=catalog_grouped(),
+        connection_message_fa="کلید هر نسخه مدل جداگانه رمزنگاری می‌شود؛ فقط سمت سرور.",
         error_history=[
             {
                 "at": datetime.now(timezone.utc).isoformat(),
-                "message_fa": "فاز B: تماس واقعی provider پولی انجام نمی‌شود",
+                "message_fa": "بدون کلید نسخهٔ فعال، مسیر رایگان/stub برای LLM استفاده می‌شود.",
             }
         ],
         is_mock_ui=False,
@@ -89,7 +164,6 @@ def update_provider(db: Session, provider_id: str, body: ProviderUpdateIn) -> Pr
     if body.model is not None:
         row.model = body.model
     if body.api_key is not None:
-        # Encrypt at rest; never log plaintext
         if body.api_key.strip() == "":
             row.encrypted_api_key = None
         else:
@@ -111,6 +185,11 @@ def update_provider(db: Session, provider_id: str, body: ProviderUpdateIn) -> Pr
 
 
 def set_model(db: Session, model: str) -> str:
+    model = model.strip()
+    if model not in models_by_id():
+        from app.core.errors import AppError
+
+        raise AppError("INVALID_MODEL", "نسخه مدل در فهرست پشتیبانی‌شده نیست.")
     row = db.get(AppMeta, "selected_model")
     if not row:
         db.add(AppMeta(key="selected_model", value=model))
@@ -120,8 +199,45 @@ def set_model(db: Session, model: str) -> str:
     return model
 
 
+def set_model_api_key(db: Session, model_id: str, api_key: str | None) -> dict:
+    """Save or clear encrypted key for one model version only."""
+    if model_id not in models_by_id():
+        from app.core.errors import AppError
+
+        raise AppError("INVALID_MODEL", "نسخه مدل نامعتبر است.")
+    meta_key = _model_key_meta(model_id)
+    row = db.get(AppMeta, meta_key)
+    if api_key is None or api_key.strip() == "":
+        if row:
+            db.delete(row)
+            db.commit()
+        return {"model": model_id, "has_key_configured": False}
+    encrypted = encrypt_secret(api_key.strip())
+    if not row:
+        db.add(AppMeta(key=meta_key, value=encrypted))
+    else:
+        row.value = encrypted
+    db.commit()
+    return {"model": model_id, "has_key_configured": True}
+
+
 def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
     ensure_providers(db)
+    # Model-version test: provider_id may be "model:<id>"
+    if provider_id.startswith("model:"):
+        model_id = provider_id.removeprefix("model:")
+        if model_id not in models_by_id():
+            return TestConnectionOut(ok=False, message_fa="مدل یافت نشد.")
+        if not model_has_key(db, model_id):
+            return TestConnectionOut(
+                ok=False,
+                message_fa="کلید این نسخه مدل پیکربندی نشده است.",
+            )
+        return TestConnectionOut(
+            ok=True,
+            message_fa=f"کلید نسخه «{model_id}» سمت سرور موجود است (بدون تماس پولی در آزمون).",
+        )
+
     row = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == provider_id))
     if not row:
         return TestConnectionOut(ok=False, message_fa="ارائه‌دهنده یافت نشد.")
@@ -130,16 +246,14 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
         db.commit()
         return TestConnectionOut(
             ok=False,
-            message_fa="کلید پیکربندی نشده است. در فاز B تماس پولی برقرار نمی‌شود.",
+            message_fa="کلید پیکربندی نشده است.",
         )
-    # Phase B: do not call paid APIs — report configured-but-untested-live
     row.status = "ok"
     db.commit()
-    # Mask only — never return key
     _ = mask_secret("configured")
     return TestConnectionOut(
         ok=True,
-        message_fa="کلید سمت سرور موجود است؛ آزمون زنده provider به فاز C موکول شده (بدون هزینه).",
+        message_fa="کلید سمت سرور موجود است؛ آزمون زنده اختیاری است (بدون هزینه خودکار).",
     )
 
 
@@ -155,5 +269,7 @@ def usage_summary(db: Session) -> dict:
                 "has_key_configured": bool(r.encrypted_api_key),
             }
             for r in rows
-        ]
+        ],
+        "selected_model": get_selected_model(db),
+        "selected_model_has_key": model_has_key(db, get_selected_model(db)),
     }
