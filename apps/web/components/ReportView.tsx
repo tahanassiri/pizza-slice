@@ -13,14 +13,18 @@ export function ReportView({ report }: { report: Report }) {
   return (
     <div className="space-y-4">
       <div className="no-print flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
-          <span className="mock-banner rounded-lg px-2.5 py-1 text-xs font-medium">
-            {fa.mockPreviewBadge}
-          </span>
-          <span className="mock-banner rounded-lg px-2.5 py-1 text-xs font-medium">
-            {fa.mockBadge}
-          </span>
-        </div>
+        {report.is_mock ? (
+          <div className="flex flex-wrap gap-2">
+            <span className="mock-banner rounded-lg px-2.5 py-1 text-xs font-medium">
+              {fa.mockPreviewBadge}
+            </span>
+            <span className="mock-banner rounded-lg px-2.5 py-1 text-xs font-medium">
+              {fa.mockBadge}
+            </span>
+          </div>
+        ) : (
+          <div />
+        )}
         <button type="button" className="nova-btn-primary" onClick={() => window.print()}>
           {fa.report.print}
         </button>
@@ -43,9 +47,11 @@ export function ReportView({ report }: { report: Report }) {
                 {report.product} · {report.origin_country}
               </p>
             </div>
-            <span className="mock-banner rounded-lg px-2 py-1 text-xs font-medium">
-              {fa.mockBadge}
-            </span>
+            {report.is_mock ? (
+              <span className="mock-banner rounded-lg px-2 py-1 text-xs font-medium">
+                {fa.mockBadge}
+              </span>
+            ) : null}
           </div>
 
           <div className="no-print mt-4 grid gap-3 sm:grid-cols-2">

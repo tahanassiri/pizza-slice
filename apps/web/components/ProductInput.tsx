@@ -3,12 +3,13 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { fa } from "@/lib/i18n/fa";
-import { getApiClient } from "@/lib/api/client";
+import { getApiClient, resolveSource } from "@/lib/api/client";
 import { FIXTURE_IDS } from "@/fixtures";
 import type { FixtureId } from "@/types";
 
 export function ProductInput() {
   const router = useRouter();
+  const isMock = resolveSource() === "mock";
   const [product, setProduct] = useState("پسته خام");
   const [origin, setOrigin] = useState<string>(fa.productInput.originDefault);
   const [hs, setHs] = useState("");
@@ -35,7 +36,7 @@ export function ProductInput() {
         product: trimmed,
         origin_country: origin.trim() || fa.productInput.originDefault,
         hs_code: hs.trim() || undefined,
-        fixture_id: fixture,
+        ...(isMock ? { fixture_id: fixture } : {}),
       });
       router.push(`/analysis/${run_id}`);
     } catch {
@@ -49,12 +50,16 @@ export function ProductInput() {
       onSubmit={onSubmit}
       className="nova-panel relative overflow-hidden space-y-4 p-5 sm:p-6"
     >
-      <div className="absolute inset-y-4 end-0 w-1 rounded-full bg-[var(--mock)]/70" aria-hidden />
+      {isMock ? (
+        <div className="absolute inset-y-4 end-0 w-1 rounded-full bg-[var(--mock)]/70" aria-hidden />
+      ) : null}
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs font-medium uppercase tracking-[0.16em] text-[var(--mock)]">
           {fa.cockpit.cockpitLabel}
         </p>
-        <span className="cockpit-chip-mock cockpit-chip text-[0.65rem]">{fa.mockBadge}</span>
+        {isMock ? (
+          <span className="cockpit-chip-mock cockpit-chip text-[0.65rem]">{fa.mockBadge}</span>
+        ) : null}
       </div>
 
       <div>
@@ -98,23 +103,25 @@ export function ProductInput() {
         </div>
       </div>
 
-      <div>
-        <label className="nova-label" htmlFor="fixture">
-          {fa.productInput.fixture}
-        </label>
-        <select
-          id="fixture"
-          className="nova-input"
-          value={fixture}
-          onChange={(e) => setFixture(e.target.value as FixtureId)}
-        >
-          {FIXTURE_IDS.map((id) => (
-            <option key={id} value={id}>
-              {fa.fixtures[id]}
-            </option>
-          ))}
-        </select>
-      </div>
+      {isMock ? (
+        <div>
+          <label className="nova-label" htmlFor="fixture">
+            {fa.productInput.fixture}
+          </label>
+          <select
+            id="fixture"
+            className="nova-input"
+            value={fixture}
+            onChange={(e) => setFixture(e.target.value as FixtureId)}
+          >
+            {FIXTURE_IDS.map((id) => (
+              <option key={id} value={id}>
+                {fa.fixtures[id]}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
 
       {error ? (
         <p className="text-sm text-[var(--danger)]" role="alert">
@@ -125,7 +132,13 @@ export function ProductInput() {
       <button type="submit" className="nova-btn-primary w-full" disabled={busy}>
         {busy ? fa.loading.title : fa.productInput.submit}
       </button>
-      <p className="text-[0.7rem] leading-5 text-[var(--ink-muted)]">{fa.mockNotice}</p>
+      {isMock ? (
+        <p className="text-[0.7rem] leading-5 text-[var(--ink-muted)]">{fa.mockNotice}</p>
+      ) : (
+        <p className="text-[0.7rem] leading-5 text-[var(--ink-muted)]">
+          اجرا روی بک‌اند زنده — بدون داده آزمایشی مخلوط.
+        </p>
+      )}
     </form>
   );
 }

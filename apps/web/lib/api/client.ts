@@ -1,6 +1,6 @@
 /**
  * Single API client/adapter surface.
- * Phase A: mock adapter only. Phase B+: swap implementation without rewriting pages.
+ * mock | live — never mix mock claims with live run data.
  */
 
 import type {
@@ -11,6 +11,7 @@ import type {
   FixtureId,
   RunSnapshot,
 } from "@/types";
+import { liveAdapter } from "./live-adapter";
 import { mockAdapter } from "./mock-adapter";
 
 export type DataSource = "mock" | "live";
@@ -32,17 +33,16 @@ export interface NovaApiClient {
   listFixtures?(): FixtureId[];
 }
 
-function resolveSource(): DataSource {
+export function resolveSource(): DataSource {
   if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_DATA_SOURCE === "live") {
-    // Live adapter lands in Phase B — fall back to mock until then.
-    return "mock";
+    return "live";
   }
   return "mock";
 }
 
 export function getApiClient(): NovaApiClient {
   const source = resolveSource();
-  if (source === "mock") return mockAdapter;
+  if (source === "live") return liveAdapter;
   return mockAdapter;
 }
 

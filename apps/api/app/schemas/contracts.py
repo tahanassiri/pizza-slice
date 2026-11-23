@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+RunStatus = Literal[
+    "idle",
+    "queued",
+    "running",
+    "partial",
+    "completed",
+    "failed",
+    "rate_limited",
+    "provider_unavailable",
+    "cancelled",
+]
+
+AnalysisPhase = Literal[
+    "intake",
+    "product_classify",
+    "search",
+    "trade_stats",
+    "market_compare",
+    "conclude",
+    "buyers",
+    "feasibility",
+    "report",
+]
+
+
+class Source(BaseModel):
+    url: str
+    title: str
+    publisher: str
+    published_at: str | None = None
+    fetched_at: str
+    provider: str
+    reliability_note: str
+
+
+class MarketMetric(BaseModel):
+    key: str
+    label_fa: str
+    value: str
+    unit: str | None = None
+    estimated: bool | None = None
+
+
+class Market(BaseModel):
+    country_code: str
+    country_name_fa: str
+    rank: int
+    evidence: list[str] = Field(default_factory=list)
+    opportunities: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    metrics: list[MarketMetric] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low", "unknown"] = "unknown"
+    unknowns: list[str] = Field(default_factory=list)
+    sources: list[Source] = Field(default_factory=list)
+
+
+class BuyerContact(BaseModel):
+    email: str | None = None
+    phone: str | None = None
+    note_fa: str | None = None
+
+
+class Buyer(BaseModel):
+    company_name: str
+    website: str | None = None
+    country: str
+    business_type: str | None = None
+    fit_evidence: list[str] = Field(default_factory=list)
+    contact: BuyerContact | None = None
+    verification_status: Literal[
+        "unverified", "source_backed", "needs_review", "rejected"
+    ] = "unverified"
+    sources: list[Source] = Field(default_factory=list)
+
+
+class CostItem(BaseModel):
+    id: str
+    label_fa: str
+    amount: float | None = None
+    currency: str = "USD"
+    unit: str | None = None
+    required: bool = False
+    note_fa: str | None = None
+
+
+class ScenarioResult(BaseModel):
+    id: Literal["conservative", "base", "optimistic"]
+    label_fa: str
+    revenue: float | None = None
+    total_cost: float | None = None
+    margin: float | None = None
+    margin_pct: float | None = None
+    notes_fa: list[str] = Field(default_factory=list)
+
+
+class Feasibility(BaseModel):
+    input_assumptions: dict[str, Any] = Field(default_factory=dict)
+    cost_items: list[CostItem] = Field(default_factory=list)
+    currency: str = "USD"
+    incoterm: str | None = None
+    scenario_results: list[ScenarioResult] = Field(default_factory=list)
+    missing_inputs: list[str] = Field(default_factory=list)
+    caveats: list[str] = Field(default_factory=list)
+    is_mock_sample: bool = False
+
+
+class RunError(BaseModel):
+    code: str
+    message_fa: str
+    retryable: bool = False
+
+
+class RunOut(BaseModel):
+    id: str
+    product: str
+    origin_country: str
+    guessed_hs_code: str | None = None
+    hs_confidence: str | None = None
+    phase: str
+    status: str
+    created_at: str
+    updated_at: str
+    selected_country: str | None = None
+    error: RunError | None = None
+    is_mock: bool = False
+    fixture_id: str | None = None
+
+
+class RunEventOut(BaseModel):
+    event_id: str
+    run_id: str
+    phase: str
+    status: str
+    message_fa: str
+    timestamp: str
+    payload: dict[str, Any] | None = None
+    source_refs: list[Source] | None = None
+    error_code: str | None = None
+
+
+class Report(BaseModel):
+    run_id: str
+    product: str
+    origin_country: str
+    summary_fa: str
+    markets: list[Market] = Field(default_factory=list)
+    selected_country: str | None = None
+    buyers: list[Buyer] = Field(default_factory=list)
+    feasibility: Feasibility | None = None
+    risks_fa: list[str] = Field(default_factory=list)
+    assumptions_fa: list[str] = Field(default_factory=list)
+    sources: list[Source] = Field(default_factory=list)
+    collected_at: str
+    is_mock: bool = False
+    client_name: str | None = None
+    company_name: str | None = None
+
+
+class CreateRunIn(BaseModel):
+    product: str
+    origin_country: str = "ایران"
+    hs_code: str | None = None
+
+
+class CreateRunOut(BaseModel):
+    run_id: str
+
+
+class SelectCountryIn(BaseModel):
+    country_code: str
+
+
+class CostUpdate(BaseModel):
+    id: str
+    amount: float | None = None
+
+
+class FeasibilityIn(BaseModel):
+    cost_updates: list[CostUpdate] | None = None
+    input_assumptions: dict[str, Any] | None = None
+
+
+class RunSnapshot(BaseModel):
+    run: RunOut
+    last_event_id: str | None = None
+    events: list[RunEventOut] = Field(default_factory=list)
+    markets: list[Market] = Field(default_factory=list)
+    buyers: list[Buyer] = Field(default_factory=list)
+    feasibility: Feasibility | None = None
+    report: Report | None = None
+
+
+class AdminLoginIn(BaseModel):
+    username: str
+    password: str
+
+
+class AdminLoginOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class ProviderConfigOut(BaseModel):
+    id: str
+    name: str
+    enabled: bool
+    model: str | None = None
+    has_key_configured: bool
+    status: str
+    usage_note_fa: str
+    daily_limit: int | None = None
+    used_today: int | None = None
+
+
+class ProviderUpdateIn(BaseModel):
+    enabled: bool | None = None
+    model: str | None = None
+    api_key: str | None = None  # plaintext only in request body; stored encrypted
+
+
+class AdminSettingsOut(BaseModel):
+    providers: list[ProviderConfigOut]
+    selected_model: str
+    connection_message_fa: str
+    error_history: list[dict[str, str]]
+    is_mock_ui: bool = False
+
+
+class TestConnectionIn(BaseModel):
+    provider_id: str
+
+
+class TestConnectionOut(BaseModel):
+    ok: bool
+    message_fa: str
+
+
+class HealthOut(BaseModel):
+    status: str
+    service: str

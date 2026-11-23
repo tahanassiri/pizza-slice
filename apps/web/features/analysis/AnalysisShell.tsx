@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { fa } from "@/lib/i18n/fa";
-import { getApiClient } from "@/lib/api/client";
-import type { AnalysisTab, Feasibility, RunSnapshot } from "@/types";
+import { getApiClient, resolveSource } from "@/lib/api/client";
+import { useRunEvents } from "@/lib/api/use-run-events";
+import type { AnalysisTab, Feasibility, RunEvent, RunSnapshot } from "@/types";
 import { BuyerCard } from "@/components/BuyerCard";
 import { CostEditor } from "@/components/CostEditor";
 import { EmptyState } from "@/components/EmptyState";
@@ -96,7 +97,9 @@ export function AnalysisShell({
         const msg = e instanceof Error ? e.message : "";
         setError(
           msg.startsWith("RUN_NOT_FOUND")
-            ? "این تحلیل در حافظه جلسه نیست. از صفحه خانه یک اجرای آزمایشی جدید بسازید."
+            ? resolveSource() === "live"
+              ? "اجرا یافت نشد. از صفحه خانه یک تحلیل جدید بسازید."
+              : "این تحلیل در حافظه جلسه نیست. از صفحه خانه یک اجرای آزمایشی جدید بسازید."
             : fa.error.generic
         );
       } finally {
@@ -107,6 +110,53 @@ export function AnalysisShell({
       cancelled = true;
     };
   }, [runId]);
+
+  const onSseEvent = useCallback((event: RunEvent) => {
+    setSnap((prev) => {
+      if (!prev) return prev;
+      if (prev.events.some((e) => e.event_id === event.event_id)) return prev;
+      const events = [...prev.events, event];
+      return {
+        ...prev,
+        last_event_id: event.event_id,
+        events,
+        run: {
+          ...prev.run,
+          phase: event.phase,
+          status: event.status,
+          error: event.error_code
+            ? {
+                code: event.error_code,
+                message_fa: event.message_fa,
+                retryable: event.error_code === "PROVIDER_UNAVAILABLE",
+              }
+            : prev.run.error,
+        },
+      };
+    });
+    // Refresh snapshot periodically when pipeline likely finished a stage
+    if (
+      event.phase === "report" ||
+      event.status === "partial" ||
+      event.status === "completed" ||
+      event.status === "failed"
+    ) {
+      void getApiClient()
+        .getRun(runId)
+        .then((data) => {
+          setSnap(data);
+          setFeasibility(data.feasibility ?? null);
+        })
+        .catch(() => undefined);
+    }
+  }, [runId]);
+
+  useRunEvents(runId, {
+    enabled: resolveSource() === "live" && !loading && !!snap,
+    lastEventId: snap?.last_event_id,
+    onEvent: onSseEvent,
+    onConnectionChange: (ok) => setConnectionLost(!ok),
+  });
 
   async function selectCountry(code: string) {
     setBusySelect(true);
@@ -235,9 +285,11 @@ export function AnalysisShell({
                 {fa.analysis.tabs[tab]}
               </h2>
             </div>
-            <span className="mock-banner rounded-lg px-2 py-1 text-xs font-medium">
-              {fa.mockBadge}
-            </span>
+            {run.is_mock ? (
+              <span className="mock-banner rounded-lg px-2 py-1 text-xs font-medium">
+                {fa.mockBadge}
+              </span>
+            ) : null}
           </div>
 
           {tab === "markets" ? (
@@ -294,9 +346,11 @@ export function AnalysisShell({
               />
             ) : (
               <div className="space-y-4">
-                <p className="mock-banner rounded-xl px-3 py-2 text-sm">
-                  {fa.feasibility.sampleNote}
-                </p>
+                {feasibility.is_mock_sample ? (
+                  <p className="mock-banner rounded-xl px-3 py-2 text-sm">
+                    {fa.feasibility.sampleNote}
+                  </p>
+                ) : null}
                 <CostEditor
                   items={feasibility.cost_items}
                   onChange={(id, amount) => {

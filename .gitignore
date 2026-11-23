@@ -9,3 +9,8 @@ dist/
 coverage/
 apps/web/.next/
 apps/web/node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+apps/api/data/*.db
+*.egg-info/

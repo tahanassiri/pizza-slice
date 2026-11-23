@@ -1,7 +1,9 @@
 import { ProductInput } from "@/components/ProductInput";
 import { fa } from "@/lib/i18n/fa";
+import { resolveSource } from "@/lib/api/client";
 
 export default function HomePage() {
+  const isMock = resolveSource() === "mock";
   return (
     <div className="relative -mx-4 sm:-mx-6 -my-6 sm:-my-10 min-h-[calc(100vh-3.5rem)] overflow-hidden px-4 sm:px-6">
       <div
@@ -15,10 +17,12 @@ export default function HomePage() {
 
       <section className="relative z-10 mx-auto grid max-w-6xl gap-10 pb-16 pt-8 lg:grid-cols-[1.15fr_0.85fr] lg:items-center lg:gap-14 lg:pt-16">
         <div className="animate-fade-up space-y-6">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="cockpit-chip-mock cockpit-chip">{fa.mockPreviewBadge}</span>
-            <span className="cockpit-chip-mock cockpit-chip">{fa.mockBadge}</span>
-          </div>
+          {isMock ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="cockpit-chip-mock cockpit-chip">{fa.mockPreviewBadge}</span>
+              <span className="cockpit-chip-mock cockpit-chip">{fa.mockBadge}</span>
+            </div>
+          ) : null}
 
           <p className="font-display text-5xl font-bold tracking-tight text-white sm:text-6xl md:text-7xl">
             {fa.brand}

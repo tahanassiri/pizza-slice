@@ -1,37 +1,36 @@
 # NOVA Export Intelligence
 
-فاز A: فرانت‌اند فارسی/RTL با داده آزمایشی.
+Private Persian/RTL demo: product → markets → buyers → feasibility → printable report.
 
-## اجرای محلی
+## Quick start
 
 ```bash
+# API
+cd apps/api && pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+
+# Web (live backend)
 cd apps/web
-npm install
-npm run dev
+export NEXT_PUBLIC_DATA_SOURCE=live
+export NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+npm install && npm run dev
 ```
 
-باز کردن: [http://localhost:3000](http://localhost:3000)
+Compose: `docker compose up --build` from repo root.
 
-## اسکریپت‌ها
+Defaults: admin `admin` / `nova-dev-change-me`. See `.env.example`.
+
+- `NEXT_PUBLIC_DATA_SOURCE=mock` — Phase A fixtures only  
+- `PROVIDER_MODE=auto` — free World Bank/Wiki (+ keyed providers if configured)  
+- `PROVIDER_MODE=stub` — no external calls  
+
+## Tests
 
 ```bash
-npm run lint
-npx tsc --noEmit
-npm run build
+cd apps/api && python -m pytest tests/ -v
+cd apps/web && npm run lint && npm run typecheck
 ```
 
-## یادداشت‌ها
+## Docs
 
-- منبع داده پیش‌فرض: mock (`NEXT_PUBLIC_DATA_SOURCE=mock`)
-- کلید API در مرورگر ذخیره نمی‌شود
-- Graphify MCP در محیط ساخت این نسخه در دسترس نبود
-- مخزن محلی است؛ بدون مجوز کاربر به سرویس ثالث پوش نشود
-
-## مسیرها
-
-| مسیر | توضیح |
-|------|--------|
-| `/` | شروع تحلیل |
-| `/analysis/[id]` | تایم‌لاین و تب‌های نتیجه |
-| `/admin/login` | ورود نمایشی مدیر |
-| `/admin` | تنظیمات نمایشی |
+- `docs/ARCHITECTURE.md`, `docs/API_CONTRACTS.md`, `docs/PROVIDERS.md`, `docs/DEMO_ACCEPTANCE.md`

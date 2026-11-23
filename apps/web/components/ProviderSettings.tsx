@@ -2,19 +2,71 @@
 
 import { useState } from "react";
 import { fa } from "@/lib/i18n/fa";
+import { resolveSource } from "@/lib/api/client";
+import { getAdminToken } from "@/lib/api/live-adapter";
 import type { AdminSettingsView } from "@/types";
 
 export function ProviderSettings({ settings }: { settings: AdminSettingsView }) {
+  const isMock = resolveSource() === "mock" || settings.is_mock_ui;
   const [message, setMessage] = useState(settings.connection_message_fa);
   const [keyDraft, setKeyDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const firstProvider = settings.providers[0]?.id ?? "tavily";
+
+  async function testConnection() {
+    setBusy(true);
+    try {
+      if (isMock) {
+        setKeyDraft("");
+        setMessage(
+          "آزمون اتصال نمایشی انجام شد — هیچ درخواست واقعی ارسال نشد و کلید ذخیره نشد."
+        );
+        return;
+      }
+      const token = getAdminToken();
+      const base = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000").replace(
+        /\/$/,
+        ""
+      );
+      if (keyDraft.trim()) {
+        await fetch(`${base}/api/admin/providers/${firstProvider}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ api_key: keyDraft.trim() }),
+        });
+        setKeyDraft("");
+      }
+      const res = await fetch(`${base}/api/admin/test-connection`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ provider_id: firstProvider }),
+      });
+      const body = (await res.json()) as { message_fa?: string; ok?: boolean };
+      setMessage(body.message_fa || "نتیجه آزمون دریافت شد.");
+    } catch {
+      setMessage(fa.error.generic);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-2">
-        <span className="cockpit-chip-mock cockpit-chip">{fa.mockPreviewBadge}</span>
-        <span className="cockpit-chip-mock cockpit-chip">{fa.mockBadge}</span>
-      </div>
-      <p className="text-sm text-[var(--mock)]">{fa.admin.noRealKeys}</p>
+      {isMock ? (
+        <div className="flex flex-wrap gap-2">
+          <span className="cockpit-chip-mock cockpit-chip">{fa.mockPreviewBadge}</span>
+          <span className="cockpit-chip-mock cockpit-chip">{fa.mockBadge}</span>
+        </div>
+      ) : null}
+      <p className="text-sm text-[var(--mock)]">
+        {isMock ? fa.admin.noRealKeys : "کلیدها رمزنگاری‌شده فقط سمت سرور ذخیره می‌شوند."}
+      </p>
 
       <section className="nova-panel space-y-3 p-5">
         <div className="mb-1 flex items-center justify-between">
@@ -52,6 +104,7 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
                 {p.enabled ? fa.admin.enabled : fa.admin.disabled}
                 {" · "}
                 {fa.providerStatus[p.status] ?? p.status}
+                {p.has_key_configured ? " · key✓" : ""}
               </span>
             </li>
           ))}
@@ -80,12 +133,8 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
         <button
           type="button"
           className="nova-btn-ghost"
-          onClick={() => {
-            setKeyDraft("");
-            setMessage(
-              "آزمون اتصال نمایشی انجام شد — هیچ درخواست واقعی ارسال نشد و کلید ذخیره نشد."
-            );
-          }}
+          disabled={busy}
+          onClick={() => void testConnection()}
         >
           {fa.admin.testConnection}
         </button>
@@ -96,7 +145,10 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
         <h2 className="mb-3 font-semibold text-white">{fa.admin.errors}</h2>
         <ul className="space-y-2 text-sm text-[var(--ink-muted)]">
           {settings.error_history.map((e) => (
-            <li key={e.at + e.message_fa} className="flex flex-wrap gap-2 border-r border-[var(--line)] pr-2">
+            <li
+              key={e.at + e.message_fa}
+              className="flex flex-wrap gap-2 border-r border-[var(--line)] pr-2"
+            >
               <time dir="ltr" className="text-xs opacity-70">
                 {new Date(e.at).toLocaleString("fa-IR")}
               </time>

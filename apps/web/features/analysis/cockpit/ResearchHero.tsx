@@ -93,10 +93,14 @@ export function ResearchHero({
             run
           </p>
           <p className="font-mono text-sm text-[var(--cockpit-teal)]">{run.id}</p>
-          <p className="mt-2 text-[0.65rem] uppercase tracking-[0.18em] text-[var(--cockpit-faint)]">
-            fixture
-          </p>
-          <p className="text-xs text-[var(--cockpit-muted)]">{run.fixture_id}</p>
+          {run.is_mock && run.fixture_id ? (
+            <>
+              <p className="mt-2 text-[0.65rem] uppercase tracking-[0.18em] text-[var(--cockpit-faint)]">
+                fixture
+              </p>
+              <p className="text-xs text-[var(--cockpit-muted)]">{run.fixture_id}</p>
+            </>
+          ) : null}
         </div>
       </div>
     </section>

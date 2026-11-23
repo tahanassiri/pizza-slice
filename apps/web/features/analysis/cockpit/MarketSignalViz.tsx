@@ -22,7 +22,6 @@ export function MarketSignalViz({ markets }: { markets: Market[] }) {
     <section className="cockpit-panel overflow-hidden p-4">
       <div className="mb-2 flex items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-white">{fa.cockpit.signalMap}</h3>
-        <span className="cockpit-chip-mock cockpit-chip">{fa.mockBadge}</span>
       </div>
       <p className="mb-3 text-[0.7rem] text-[var(--cockpit-faint)]">{fa.cockpit.signalHint}</p>
 

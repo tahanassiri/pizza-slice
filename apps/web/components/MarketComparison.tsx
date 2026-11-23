@@ -29,9 +29,6 @@ export function MarketComparison({
           </p>
           <h3 className="text-lg font-semibold text-[var(--study-ink)]">{fa.markets.title}</h3>
         </div>
-        <span className="mock-banner rounded-lg px-2 py-1 text-xs font-medium">
-          {fa.mockBadge}
-        </span>
       </div>
 
       {/* Rank strip — not a dense data table */}

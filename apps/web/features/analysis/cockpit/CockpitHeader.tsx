@@ -17,8 +17,12 @@ export function CockpitHeader({ run }: { run: Run }) {
           <span className="hidden text-sm text-[var(--cockpit-faint)] sm:inline">
             {fa.brandSubtitle}
           </span>
-          <span className="cockpit-chip-mock cockpit-chip">{fa.mockPreviewBadge}</span>
-          <span className="cockpit-chip-mock cockpit-chip">{fa.mockBadge}</span>
+          {run.is_mock ? (
+            <>
+              <span className="cockpit-chip-mock cockpit-chip">{fa.mockPreviewBadge}</span>
+              <span className="cockpit-chip-mock cockpit-chip">{fa.mockBadge}</span>
+            </>
+          ) : null}
         </div>
         <div>
           <p className="text-[0.65rem] font-medium uppercase tracking-[0.18em] text-[var(--cockpit-gold)]">

@@ -147,8 +147,8 @@ export interface Run {
   updated_at: string;
   selected_country?: string;
   error?: RunError;
-  is_mock: true;
-  fixture_id: FixtureId;
+  is_mock: boolean;
+  fixture_id?: FixtureId | null;
 }
 
 export interface Report {
@@ -164,7 +164,7 @@ export interface Report {
   assumptions_fa: string[];
   sources: Source[];
   collected_at: string;
-  is_mock: true;
+  is_mock: boolean;
   client_name?: string;
   company_name?: string;
 }
@@ -207,7 +207,7 @@ export interface AdminSettingsView {
   selected_model: string;
   connection_message_fa: string;
   error_history: { at: string; message_fa: string }[];
-  is_mock_ui: true;
+  is_mock_ui: boolean;
 }
 
 export type AnalysisTab = "timeline" | "markets" | "buyers" | "feasibility" | "report";

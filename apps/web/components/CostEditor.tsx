@@ -19,7 +19,6 @@ export function CostEditor({
           </p>
           <h3 className="font-semibold text-[var(--study-ink)]">{fa.feasibility.editor}</h3>
         </div>
-        <span className="mock-banner rounded-lg px-2 py-1 text-xs">{fa.mockBadge}</span>
       </div>
 
       <div className="divide-y divide-[var(--study-line)]">
