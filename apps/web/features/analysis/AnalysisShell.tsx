@@ -10,6 +10,7 @@ import { BuyerCard } from "@/components/BuyerCard";
 import { CostEditor } from "@/components/CostEditor";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
+import { LoadingState } from "@/components/LoadingState";
 import { MarketComparison } from "@/components/MarketComparison";
 import { ReportView } from "@/components/ReportView";
 import { ScenarioComparison } from "@/components/ScenarioComparison";
@@ -204,10 +205,8 @@ export function AnalysisShell({
 
   if (loading) {
     return (
-      <div className="cockpit-shell flex items-center justify-center">
-        <div className="cockpit-panel px-6 py-4 text-sm text-[var(--cockpit-muted)]">
-          {fa.loading.title}
-        </div>
+      <div className="cockpit-shell mx-auto flex max-w-lg items-center justify-center py-10">
+        <LoadingState label={fa.loading.pleaseWait} />
       </div>
     );
   }

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { fa } from "@/lib/i18n/fa";
 import { getApiClient, resolveSource } from "@/lib/api/client";
+import { LoadingState } from "@/components/LoadingState";
 import { FIXTURE_IDS } from "@/fixtures";
 import type { FixtureId } from "@/types";
 
@@ -129,8 +130,22 @@ export function ProductInput() {
         </p>
       ) : null}
 
+      {busy ? (
+        <LoadingState label={fa.loading.startingAnalysis} />
+      ) : null}
+
       <button type="submit" className="nova-btn-primary w-full" disabled={busy}>
-        {busy ? fa.loading.title : fa.productInput.submit}
+        {busy ? (
+          <span className="inline-flex items-center justify-center gap-2">
+            <span
+              className="inline-block h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin"
+              aria-hidden
+            />
+            {fa.loading.pleaseWait}
+          </span>
+        ) : (
+          fa.productInput.submit
+        )}
       </button>
       {isMock ? (
         <p className="text-[0.7rem] leading-5 text-[var(--ink-muted)]">{fa.mockNotice}</p>

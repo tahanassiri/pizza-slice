@@ -245,6 +245,9 @@ export const fa = {
 
   loading: {
     title: "در حال بارگذاری…",
+    pleaseWait: "لطفاً صبر کنید…",
+    startingAnalysis: "در حال شروع تحلیل — لطفاً صبر کنید…",
+    hint: "سایت در حال کار است؛ چند ثانیه صبر کنید.",
   },
 
   footer: {
