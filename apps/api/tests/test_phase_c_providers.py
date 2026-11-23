@@ -121,7 +121,14 @@ def test_pipeline_auto_mode_with_mocked_wits(client, monkeypatch):
     get_settings.cache_clear()
     assert snap is not None
     assert snap["run"]["is_mock"] is False
-    assert len(snap["markets"]) == 3, snap["run"]
+    # Up to 3 recommended + up to 2 risky (agentic ranking)
+    assert 1 <= len(snap["markets"]) <= 5, snap["run"]
+    recommended = [
+        m
+        for m in snap["markets"]
+        if any(x.get("key") == "recommendation" and x.get("value") == "recommended" for x in m.get("metrics") or [])
+    ]
+    assert len(recommended) <= 3
     assert snap["report"] is not None
     assert snap["report"]["is_mock"] is False
     assert "WITS" in (snap["report"]["summary_fa"] or "") or any(

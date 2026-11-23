@@ -98,6 +98,60 @@ def usage(db: Session = Depends(get_db), _auth: str = Depends(require_admin)):
     return admin_service.usage_summary(db)
 
 
+@router.get("/budgets")
+def get_budgets(db: Session = Depends(get_db), _auth: str = Depends(require_admin)):
+    return admin_service.usage_summary(db).get("agent_budget")
+
+
+@router.put("/budgets")
+def put_budgets(
+    body: dict,
+    db: Session = Depends(get_db),
+    _auth: str = Depends(require_admin),
+):
+    return admin_service.update_global_budget(
+        db,
+        max_model_calls=body.get("max_model_calls"),
+        max_search_queries=body.get("max_search_queries"),
+        max_pages=body.get("max_pages"),
+        max_retries=body.get("max_retries"),
+        max_wall_seconds=body.get("max_wall_seconds"),
+    )
+
+
+@router.get("/knowledge")
+def list_knowledge(
+    kind: str | None = None,
+    db: Session = Depends(get_db),
+    _auth: str = Depends(require_admin),
+):
+    from sqlalchemy import select
+
+    from app.models.entities import KnowledgeItem
+
+    q = select(KnowledgeItem).where(KnowledgeItem.scope == "public").order_by(KnowledgeItem.fetched_at.desc()).limit(50)
+    if kind:
+        q = q.where(KnowledgeItem.kind == kind)
+    rows = list(db.scalars(q).all())
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "canonical_key": r.canonical_key,
+                "kind": r.kind,
+                "product_normalized": r.product_normalized,
+                "hs6": r.hs6,
+                "confidence": r.confidence,
+                "fetched_at": r.fetched_at.isoformat() if r.fetched_at else None,
+                "stale_after": r.stale_after.isoformat() if r.stale_after else None,
+                "version": r.version,
+                "status": r.status,
+            }
+            for r in rows
+        ]
+    }
+
+
 @router.post("/test-connection", response_model=TestConnectionOut)
 def test_connection(
     body: TestConnectionIn,

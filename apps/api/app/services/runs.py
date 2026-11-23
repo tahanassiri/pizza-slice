@@ -189,6 +189,11 @@ def start_buyer_search(db: Session, run_id: str, country_code: str) -> RunSnapsh
 
 
 def _run_buyer_search(run_id: str, job_id: str) -> None:
+    from app.agents.buyer_runner import discover_and_verify_buyers
+    from app.events.broadcaster import broadcaster
+    from app.events.store import append_event
+    from app.tools.executor import ToolExecutor
+
     with _buyer_lock, SessionLocal() as db:
         job = db.get(BuyerSearchRow, run_id)
         run = db.get(Run, run_id)
@@ -198,6 +203,26 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
         job.status = "running"
         job.updated_at = datetime.now(timezone.utc)
         db.commit()
+        # Emit gate-respecting start event
+        try:
+            evt = append_event(
+                db,
+                run_id=run_id,
+                event_id=f"evt_{secrets.token_hex(8)}",
+                phase="buyers",
+                status="running",
+                message_fa=f"شروع تحقیق خریدار در {country_code}",
+                payload={"event_type": "buyers.job_started", "country_code": country_code},
+            )
+            # best-effort publish (sync bridge)
+            try:
+                import asyncio
+
+                asyncio.run(broadcaster.publish(run_id, evt.model_dump()))
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     status = "failed"
     error_code = "PROVIDER_UNAVAILABLE"
@@ -206,13 +231,59 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
     sources = []
     try:
         with SessionLocal() as db:
-            search = resolve_providers(db).search
-        result = search.search_buyers(product, country_code)
-        buyers = (result.buyers or [])[:10]
-        sources = result.sources or []
-        status = "completed" if buyers else "partial"
-        error_code = None if buyers else result.error_code
-        error_message = None if buyers else result.message_fa
+            bundle = resolve_providers(db)
+            search = getattr(bundle, "search", None)
+            mode = getattr(bundle, "mode", "auto")
+            # Avoid live page fetches in stub/offline mode (honest candidates only).
+            use_fetch = mode != "stub"
+            executor = None
+            if use_fetch and search is not None:
+                executor = ToolExecutor(
+                    db,
+                    run_id=run_id,
+                    search=search,
+                    trade_service=getattr(bundle, "trade_service", None),
+                    llm=getattr(bundle, "llm", None),
+                )
+            buyers, sources, status, error_code, error_message = discover_and_verify_buyers(
+                db,
+                run_id=run_id,
+                product=product,
+                country_code=country_code,
+                search_provider=search,
+                executor=executor,
+                max_publish=10,
+            )
+            # Emit per verified/needs_review card
+            for buyer in buyers:
+                try:
+                    evt = append_event(
+                        db,
+                        run_id=run_id,
+                        event_id=f"evt_{secrets.token_hex(8)}",
+                        phase="buyers",
+                        status="partial",
+                        message_fa=f"کارت خریدار: {buyer.company_name}",
+                        payload={
+                            "event_type": (
+                                "buyer.verified"
+                                if buyer.verification_status == "source_backed"
+                                else "buyer.needs_review"
+                            ),
+                            "company_name": buyer.company_name,
+                            "verification_status": buyer.verification_status,
+                            "country_code": country_code,
+                        },
+                        source_refs=buyer.sources or None,
+                    )
+                    try:
+                        import asyncio
+
+                        asyncio.run(broadcaster.publish(run_id, evt.model_dump()))
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -226,6 +297,15 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
         job.sources_json = json.dumps([source.model_dump() for source in sources], ensure_ascii=False)
         job.error_code = error_code
         job.error_message_fa = error_message
+        run = db.get(Run, run_id)
+        if run and buyers:
+            run.buyers_json = job.buyers_json
+            if run.report_json:
+                report = Report.model_validate_json(run.report_json)
+                report.selected_country = country_code
+                report.buyers = buyers
+                run.report_json = report.model_dump_json()
+            run.updated_at = job.updated_at
         db.commit()
 
 
@@ -245,44 +325,8 @@ def mark_interrupted_runs(db: Session) -> None:
 
 
 def select_country(db: Session, run_id: str, country_code: str) -> RunSnapshot:
-    run = db.get(Run, run_id)
-    if not run:
-        raise AppError("RUN_NOT_FOUND", "اجرا یافت نشد.", 404)
-    run.selected_country = country_code
-    run.updated_at = datetime.now(timezone.utc)
-
-    bundle = resolve_providers(db)
-    result = bundle.search.search_buyers(run.product, country_code)
-    buyers = result.buyers or []
-    run.buyers_json = json.dumps([b.model_dump() for b in buyers], ensure_ascii=False)
-
-    if run.report_json:
-        report = Report.model_validate_json(run.report_json)
-        report.selected_country = country_code
-        report.buyers = buyers
-        if result.sources:
-            existing = {s.url for s in report.sources}
-            report.sources = list(report.sources) + [
-                s for s in result.sources if s.url not in existing
-            ]
-        run.report_json = report.model_dump_json()
-
-    # Honest empty → surface as soft error; candidates clear prior buyer errors
-    if not buyers and result.error_code:
-        run.error_code = result.error_code
-        run.error_message_fa = result.message_fa
-        run.error_retryable = 1
-    elif buyers:
-        if run.error_code in {"NO_BUYERS", "INSUFFICIENT_EVIDENCE"}:
-            run.error_code = None
-            run.error_message_fa = None
-            run.error_retryable = 0
-
-    previous_job = db.get(BuyerSearchRow, run_id)
-    if previous_job:
-        db.delete(previous_job)
-    db.commit()
-    return snapshot(db, run_id)
+    """Human gate: selecting a country starts verified buyer research (async job)."""
+    return start_buyer_search(db, run_id, country_code)
 
 
 def post_feasibility(

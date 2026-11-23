@@ -89,6 +89,10 @@ class CostItem(BaseModel):
     unit: str | None = None
     required: bool = False
     note_fa: str | None = None
+    # verified | estimated | user_input | missing
+    status: Literal["verified", "estimated", "user_input", "missing"] | None = None
+    source_url: str | None = None
+    as_of: str | None = None
 
 
 class ScenarioResult(BaseModel):
@@ -110,6 +114,9 @@ class Feasibility(BaseModel):
     missing_inputs: list[str] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
     is_mock_sample: bool = False
+    break_even_price: float | None = None
+    break_even_qty: float | None = None
+    sensitivity: dict[str, Any] | None = None
 
 
 class RunError(BaseModel):

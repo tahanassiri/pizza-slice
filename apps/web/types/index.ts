@@ -94,6 +94,9 @@ export interface CostItem {
   unit?: string;
   required: boolean;
   note_fa?: string;
+  status?: "verified" | "estimated" | "user_input" | "missing" | null;
+  source_url?: string | null;
+  as_of?: string | null;
 }
 
 export interface ScenarioResult {
@@ -117,6 +120,9 @@ export interface FeasibilityAssumptions {
 export type CostUpdateInput = Pick<CostItem, "id" | "amount"> & { currency?: string };
 
 export interface Feasibility {
+  break_even_price?: number | null;
+  break_even_qty?: number | null;
+  sensitivity?: Record<string, number | null> | null;
   input_assumptions: FeasibilityAssumptions;
   cost_items: CostItem[];
   currency: string;

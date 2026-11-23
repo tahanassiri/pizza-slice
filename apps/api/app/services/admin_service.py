@@ -381,8 +381,15 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
 
 
 def usage_summary(db: Session) -> dict:
+    from app.models.entities import AgentBudget, UsageAudit
+    from app.tools.budget import ensure_global_budget
+
     ensure_providers(db)
     rows = list(db.scalars(select(ProviderSetting)).all())
+    budget = ensure_global_budget(db)
+    recent = list(
+        db.scalars(select(UsageAudit).order_by(UsageAudit.id.desc()).limit(40)).all()
+    )
     return {
         "providers": [
             {
@@ -395,4 +402,56 @@ def usage_summary(db: Session) -> dict:
         ],
         "selected_model": get_selected_model(db),
         "selected_model_has_key": model_has_key(db, get_selected_model(db)),
+        "agent_budget": {
+            "scope": budget.scope,
+            "max_model_calls": budget.max_model_calls,
+            "max_search_queries": budget.max_search_queries,
+            "max_pages": budget.max_pages,
+            "max_retries": budget.max_retries,
+            "max_wall_seconds": budget.max_wall_seconds,
+            "model_calls_used": budget.model_calls_used,
+            "search_queries_used": budget.search_queries_used,
+            "pages_used": budget.pages_used,
+        },
+        "recent_tool_usage": [
+            {
+                "run_id": u.run_id,
+                "provider_id": u.provider_id,
+                "tool_name": u.tool_name,
+                "units": u.units,
+                "ok": bool(u.ok),
+                "detail_fa": u.detail_fa,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+            }
+            for u in recent
+        ],
     }
+
+
+def update_global_budget(
+    db: Session,
+    *,
+    max_model_calls: int | None = None,
+    max_search_queries: int | None = None,
+    max_pages: int | None = None,
+    max_retries: int | None = None,
+    max_wall_seconds: int | None = None,
+) -> dict:
+    from datetime import datetime, timezone
+
+    from app.tools.budget import ensure_global_budget
+
+    budget = ensure_global_budget(db)
+    if max_model_calls is not None:
+        budget.max_model_calls = max(1, int(max_model_calls))
+    if max_search_queries is not None:
+        budget.max_search_queries = max(1, int(max_search_queries))
+    if max_pages is not None:
+        budget.max_pages = max(1, int(max_pages))
+    if max_retries is not None:
+        budget.max_retries = max(0, int(max_retries))
+    if max_wall_seconds is not None:
+        budget.max_wall_seconds = max(30, int(max_wall_seconds))
+    budget.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return usage_summary(db)["agent_budget"]

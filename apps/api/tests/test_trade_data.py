@@ -335,7 +335,17 @@ def test_pipeline_without_comtrade_key(client, monkeypatch):
     assert snap["report"] is not None
     # Either ranked markets from WITS or honest partial — never mock fake buyers/stats
     if snap["markets"]:
-        assert len(snap["markets"]) <= 3
+        # recommended (≤3) + risky (≤2) in agentic ranking
+        assert len(snap["markets"]) <= 5
+        recommended = [
+            m
+            for m in snap["markets"]
+            if any(
+                x["key"] == "recommendation" and x["value"] == "recommended"
+                for x in m["metrics"]
+            )
+        ]
+        assert len(recommended) <= 3
         q = next(
             (m for m in snap["markets"][0]["metrics"] if m["key"] == "data_quality"),
             None,
