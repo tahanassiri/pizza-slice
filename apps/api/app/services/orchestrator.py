@@ -91,6 +91,13 @@ async def run_pipeline(run_id: str) -> None:
             status="running",
             message_fa="شروع پردازش درخواست",
         )
+        await _emit(
+            db,
+            run,
+            phase="intake",
+            status="completed",
+            message_fa="ورود درخواست تکمیل شد",
+        )
 
         hs, hs_conf = llm.classify_hs(run.product, run.guessed_hs_code)
         run.guessed_hs_code = hs
@@ -212,6 +219,27 @@ async def run_pipeline(run_id: str) -> None:
         quality = (market_result.meta or {}).get("quality_status") or (
             trade_result.meta or {}
         ).get("quality_status")
+
+        await _emit(
+            db,
+            run,
+            phase="market_compare",
+            status="completed" if markets else "partial",
+            message_fa=(
+                f"مقایسه بازار تمام شد — {len(markets)} کشور کاندید"
+                if markets
+                else "مقایسه بازار بدون کاندید قطعی (داده ناقص)"
+            ),
+            source_refs=market_result.sources,
+            error_code=None
+            if markets
+            else (market_result.error_code or "INSUFFICIENT_EVIDENCE"),
+            payload={
+                "markets_found": len(markets),
+                "quality_status": quality,
+                "country_codes": [m.country_code for m in markets],
+            },
+        )
 
         if not markets:
             await _emit(

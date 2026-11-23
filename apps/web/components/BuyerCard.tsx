@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import { fa } from "@/lib/i18n/fa";
 import type { Buyer } from "@/types";
 import { SourceBadge } from "./SourceBadge";
@@ -10,6 +13,8 @@ const verifyTone: Record<Buyer["verification_status"], string> = {
 };
 
 export function BuyerCard({ buyer }: { buyer: Buyer }) {
+  const [open, setOpen] = useState(false);
+
   return (
     <article className="dossier-row overflow-hidden">
       <div className="flex items-stretch">
@@ -27,14 +32,15 @@ export function BuyerCard({ buyer }: { buyer: Buyer }) {
         />
         <div className="flex-1 p-4">
           <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
-            <div>
+            <div className="min-w-0">
               <p className="text-[0.65rem] uppercase tracking-[0.12em] text-[var(--study-muted)]">
                 potential buyer
               </p>
               <h3 className="font-semibold text-[var(--study-ink)]">{buyer.company_name}</h3>
-              {buyer.business_type ? (
-                <p className="text-sm text-[var(--study-muted)]">{buyer.business_type}</p>
-              ) : null}
+              <p className="mt-0.5 text-xs text-[var(--study-muted)]">
+                {buyer.country}
+                {buyer.business_type ? ` · ${buyer.business_type}` : ""}
+              </p>
             </div>
             <span
               className={`rounded-lg px-2 py-1 text-xs font-semibold ${verifyTone[buyer.verification_status]}`}
@@ -43,18 +49,13 @@ export function BuyerCard({ buyer }: { buyer: Buyer }) {
             </span>
           </div>
 
-          {buyer.fit_evidence.length ? (
-            <div className="mb-3">
-              <p className="mb-1 text-xs font-medium text-[var(--study-ink)]">{fa.buyers.fit}</p>
-              <ul className="space-y-1 text-sm text-[var(--study-muted)]">
-                {buyer.fit_evidence.map((e) => (
-                  <li key={e}>• {e}</li>
-                ))}
-              </ul>
-            </div>
+          {buyer.fit_evidence[0] ? (
+            <p className="mb-2 line-clamp-2 text-sm text-[var(--study-muted)]">
+              {buyer.fit_evidence[0]}
+            </p>
           ) : null}
 
-          <div className="flex flex-wrap gap-3 text-sm">
+          <div className="flex flex-wrap items-center gap-3 text-sm">
             {buyer.website ? (
               <a
                 href={buyer.website}
@@ -66,18 +67,82 @@ export function BuyerCard({ buyer }: { buyer: Buyer }) {
                 {fa.buyers.website}
               </a>
             ) : null}
-            {buyer.contact?.email || buyer.contact?.phone ? (
-              <span className="text-[var(--study-muted)]">
-                {fa.buyers.contact}:{" "}
-                <span dir="ltr">{buyer.contact.email || buyer.contact.phone}</span>
-                {buyer.contact.note_fa ? ` — ${buyer.contact.note_fa}` : ""}
-              </span>
-            ) : null}
+            <button
+              type="button"
+              className="text-xs font-semibold text-[var(--study-ink)] underline-offset-2 hover:underline"
+              onClick={() => setOpen((v) => !v)}
+              aria-expanded={open}
+            >
+              {open ? fa.buyers.hideDetails : fa.buyers.showDetails}
+            </button>
           </div>
 
-          {buyer.sources.length ? (
+          {open ? (
+            <div className="animate-fade-up mt-3 space-y-3 border-t border-[var(--study-line)] pt-3">
+              <dl className="grid gap-2 text-sm sm:grid-cols-2">
+                <div>
+                  <dt className="text-xs font-semibold text-[var(--study-ink)]">{fa.buyers.company}</dt>
+                  <dd className="text-[var(--study-muted)]">{buyer.company_name}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-semibold text-[var(--study-ink)]">{fa.buyers.country}</dt>
+                  <dd className="text-[var(--study-muted)]" dir="ltr">
+                    {buyer.country}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-semibold text-[var(--study-ink)]">{fa.buyers.role}</dt>
+                  <dd className="text-[var(--study-muted)]">
+                    {buyer.business_type ?? fa.buyers.roleUnknown}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-semibold text-[var(--study-ink)]">{fa.buyers.status}</dt>
+                  <dd className="text-[var(--study-muted)]">
+                    {fa.verification[buyer.verification_status]}
+                  </dd>
+                </div>
+              </dl>
+
+              {buyer.fit_evidence.length ? (
+                <div>
+                  <p className="mb-1 text-xs font-medium text-[var(--study-ink)]">{fa.buyers.fit}</p>
+                  <ul className="space-y-1.5 text-sm text-[var(--study-muted)]">
+                    {buyer.fit_evidence.map((e) => (
+                      <li key={e} className="border-r-2 border-[#0cb6aa]/35 pr-2">
+                        {e}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {buyer.contact?.email || buyer.contact?.phone ? (
+                <p className="text-sm text-[var(--study-muted)]">
+                  {fa.buyers.contact}:{" "}
+                  <span dir="ltr">{buyer.contact.email || buyer.contact.phone}</span>
+                  {buyer.contact.note_fa ? ` — ${buyer.contact.note_fa}` : ""}
+                </p>
+              ) : (
+                <p className="text-xs text-[var(--study-muted)]">{fa.buyers.noFabricatedContact}</p>
+              )}
+
+              {buyer.sources.length ? (
+                <div>
+                  <p className="mb-1 text-xs font-medium text-[var(--study-ink)]">{fa.buyers.evidenceUrls}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {buyer.sources.map((s) => (
+                      <SourceBadge key={s.url} source={s} />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {!open && buyer.sources.length ? (
             <div className="mt-3 flex flex-wrap gap-2">
-              {buyer.sources.map((s) => (
+              {buyer.sources.slice(0, 2).map((s) => (
                 <SourceBadge key={s.url} source={s} />
               ))}
             </div>

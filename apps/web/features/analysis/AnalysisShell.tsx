@@ -161,10 +161,21 @@ export function AnalysisShell({
 
   async function selectCountry(code: string) {
     setBusySelect(true);
+    setError(null);
+    // Switch immediately so the page does not feel frozen on markets
+    setSnap((prev) =>
+      prev
+        ? {
+            ...prev,
+            buyers: [],
+            run: { ...prev.run, selected_country: code },
+          }
+        : prev
+    );
+    setTab("buyers");
     try {
       const next = await getApiClient().selectCountry(runId, code);
       setSnap(next);
-      setTab("buyers");
     } catch {
       setError(fa.error.generic);
     } finally {
@@ -206,7 +217,15 @@ export function AnalysisShell({
   if (loading) {
     return (
       <div className="cockpit-shell mx-auto flex max-w-lg items-center justify-center py-10">
-        <LoadingState label={fa.loading.pleaseWait} />
+        <LoadingState
+          label={fa.loading.pleaseWait}
+          stages={[
+            fa.loading.stages.prepare,
+            fa.loading.stages.fetch,
+            fa.loading.stages.analyze,
+            fa.loading.stages.almost,
+          ]}
+        />
       </div>
     );
   }
@@ -295,13 +314,12 @@ export function AnalysisShell({
             blocked ? (
               <EmptyState title={fa.markets.empty} hint={run.error?.message_fa} />
             ) : (
-              <div className={busySelect ? "opacity-60" : ""}>
-                <MarketComparison
-                  markets={markets}
-                  selectedCountry={run.selected_country}
-                  onSelect={selectCountry}
-                />
-              </div>
+              <MarketComparison
+                markets={markets}
+                selectedCountry={run.selected_country}
+                onSelect={selectCountry}
+                selecting={busySelect}
+              />
             )
           ) : null}
 
@@ -319,14 +337,27 @@ export function AnalysisShell({
                   </button>
                 }
               />
+            ) : busySelect ? (
+              <LoadingState
+                label={fa.buyers.searching}
+                hint={fa.buyers.searchingHint}
+                stages={[
+                  fa.loading.stages.buyers,
+                  fa.loading.stages.buyersSources,
+                  fa.loading.stages.buyersRank,
+                ]}
+              />
             ) : buyers.length === 0 ? (
-              <EmptyState title={fa.buyers.empty} hint={fa.buyers.emptyHint} />
+              <EmptyState
+                title={fa.buyers.empty}
+                hint={run.error?.message_fa || fa.buyers.emptyHint}
+              />
             ) : (
               <div className="space-y-3">
                 <p className="text-sm text-ink-muted">{fa.buyers.potentialNote}</p>
                 <div className="grid gap-3 md:grid-cols-2">
                   {buyers.map((b) => (
-                    <BuyerCard key={b.company_name} buyer={b} />
+                    <BuyerCard key={`${b.company_name}-${b.website ?? ""}`} buyer={b} />
                   ))}
                 </div>
               </div>

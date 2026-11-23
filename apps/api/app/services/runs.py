@@ -131,11 +131,16 @@ def select_country(db: Session, run_id: str, country_code: str) -> RunSnapshot:
             ]
         run.report_json = report.model_dump_json()
 
-    # Emit buyer stage status into run error fields when honest empty
+    # Honest empty → surface as soft error; candidates clear prior buyer errors
     if not buyers and result.error_code:
         run.error_code = result.error_code
         run.error_message_fa = result.message_fa
         run.error_retryable = 1
+    elif buyers:
+        if run.error_code in {"NO_BUYERS", "INSUFFICIENT_EVIDENCE"}:
+            run.error_code = None
+            run.error_message_fa = None
+            run.error_retryable = 0
 
     db.commit()
     return snapshot(db, run_id)

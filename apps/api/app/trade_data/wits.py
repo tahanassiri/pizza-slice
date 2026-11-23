@@ -16,15 +16,36 @@ from app.trade_data.types import TradeDataQuery, TradeDataResult, TradeRecord
 WITS_BASE = "https://wits.worldbank.org/API/V1/SDMX/V21/datasource/tradestats-trade"
 WITS_DOCS = "https://wits.worldbank.org/witsapiintro.aspx"
 
-# ISO2 → ISO3 for default destination set (Iran-origin export candidates)
+# ISO2 → ISO3 destination pool (Iran-export–relevant + major sector importers).
+# Broader than the old 7-country set so sector rankings are not stuck on CN/DE/IN.
 ISO2_TO_ISO3: dict[str, str] = {
     "AE": "ARE",
     "TR": "TUR",
     "IQ": "IRQ",
+    "SA": "SAU",
+    "OM": "OMN",
+    "KW": "KWT",
+    "QA": "QAT",
+    "AZ": "AZE",
+    "AM": "ARM",
+    "GE": "GEO",
+    "PK": "PAK",
+    "KZ": "KAZ",
     "CN": "CHN",
-    "DE": "DEU",
     "IN": "IND",
     "RU": "RUS",
+    "DE": "DEU",
+    "IT": "ITA",
+    "NL": "NLD",
+    "FR": "FRA",
+    "GB": "GBR",
+    "ES": "ESP",
+    "PL": "POL",
+    "KR": "KOR",
+    "JP": "JPN",
+    "MY": "MYS",
+    "SG": "SGP",
+    "BR": "BRA",
 }
 
 ISO3_TO_ISO2: dict[str, str] = {v: k for k, v in ISO2_TO_ISO3.items()}
@@ -33,10 +54,30 @@ ISO3_NAME_FA: dict[str, str] = {
     "ARE": "امارات متحده عربی",
     "TUR": "ترکیه",
     "IRQ": "عراق",
+    "SAU": "عربستان سعودی",
+    "OMN": "عمان",
+    "KWT": "کویت",
+    "QAT": "قطر",
+    "AZE": "جمهوری آذربایجان",
+    "ARM": "ارمنستان",
+    "GEO": "گرجستان",
+    "PAK": "پاکستان",
+    "KAZ": "قزاقستان",
     "CHN": "چین",
-    "DEU": "آلمان",
     "IND": "هند",
     "RUS": "روسیه",
+    "DEU": "آلمان",
+    "ITA": "ایتالیا",
+    "NLD": "هلند",
+    "FRA": "فرانسه",
+    "GBR": "بریتانیا",
+    "ESP": "اسپانیا",
+    "POL": "لهستان",
+    "KOR": "کره جنوبی",
+    "JPN": "ژاپن",
+    "MYS": "مالزی",
+    "SGP": "سنگاپور",
+    "BRA": "برزیل",
 }
 
 # HS chapter → WITS sector product code (honest group aggregate)
@@ -48,9 +89,11 @@ _HS_SECTORS: list[tuple[int, int, str, str]] = [
     (27, 27, "27-27_Fuels", "Fuels (HS 27)"),
     (28, 38, "28-38_Chemicals", "Chemicals (HS 28–38)"),
     (39, 40, "39-40_PlastiRub", "Plastics & rubber (HS 39–40)"),
+    (41, 43, "41-43_HidesSkin", "Hides & skins (HS 41–43)"),
     (44, 49, "44-49_Wood", "Wood & paper (HS 44–49)"),
     (50, 63, "50-63_TextCloth", "Textiles & clothing (HS 50–63)"),
     (64, 67, "64-67_Footwear", "Footwear (HS 64–67)"),
+    (68, 71, "68-71_StoneGlas", "Stone, glass & ceramics (HS 68–71)"),
     (72, 83, "72-83_Metals", "Metals (HS 72–83)"),
     (84, 85, "84-85_MachElec", "Machinery & electrical (HS 84–85)"),
     (86, 89, "86-89_Transport", "Transport (HS 86–89)"),

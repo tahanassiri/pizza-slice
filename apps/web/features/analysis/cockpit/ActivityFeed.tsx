@@ -24,7 +24,9 @@ export function ActivityFeed({ events }: { events: RunEvent[] }) {
     <section className="cockpit-panel flex min-h-0 min-w-0 flex-col overflow-hidden p-3 sm:p-4">
       <div className="mb-3 flex min-w-0 items-center justify-between gap-2">
         <h3 className="truncate text-sm font-semibold text-white">{fa.cockpit.activityFeed}</h3>
-        <span className="cockpit-chip-mock cockpit-chip shrink-0">{fa.mockPreviewBadge}</span>
+        <span className="cockpit-chip shrink-0 text-[0.65rem] text-[var(--cockpit-faint)]">
+          live
+        </span>
       </div>
       <ol className="max-h-[28rem] min-w-0 space-y-2 overflow-x-hidden overflow-y-auto pe-1">
         {ordered.map((ev, idx) => {

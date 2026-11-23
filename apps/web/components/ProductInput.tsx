@@ -131,21 +131,18 @@ export function ProductInput() {
       ) : null}
 
       {busy ? (
-        <LoadingState label={fa.loading.startingAnalysis} />
+        <LoadingState
+          label={fa.loading.startingAnalysis}
+          stages={[
+            fa.loading.stages.prepare,
+            fa.loading.stages.fetch,
+            fa.loading.stages.analyze,
+          ]}
+        />
       ) : null}
 
       <button type="submit" className="nova-btn-primary w-full" disabled={busy}>
-        {busy ? (
-          <span className="inline-flex items-center justify-center gap-2">
-            <span
-              className="inline-block h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin"
-              aria-hidden
-            />
-            {fa.loading.pleaseWait}
-          </span>
-        ) : (
-          fa.productInput.submit
-        )}
+        {busy ? fa.loading.pleaseWait : fa.productInput.submit}
       </button>
       {isMock ? (
         <p className="text-[0.7rem] leading-5 text-[var(--ink-muted)]">{fa.mockNotice}</p>

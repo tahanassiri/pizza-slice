@@ -15,7 +15,12 @@ const RESEARCH_PHASES: AnalysisPhase[] = [
 
 type PhaseState = "waiting" | "active" | "done" | "error" | "partial";
 
-function derive(events: RunEvent[], phase: AnalysisPhase): PhaseState {
+function derive(
+  events: RunEvent[],
+  phase: AnalysisPhase,
+  phaseIndex: number,
+  runStatus: RunStatus
+): PhaseState {
   const related = events.filter((e) => e.phase === phase);
   if (!related.length) return "waiting";
   const last = related[related.length - 1]!;
@@ -27,8 +32,20 @@ function derive(events: RunEvent[], phase: AnalysisPhase): PhaseState {
     return "error";
   }
   if (last.status === "partial") return "partial";
-  if (last.status === "running" || last.status === "queued") return "active";
   if (last.status === "completed") return "done";
+  if (last.status === "running" || last.status === "queued") {
+    // Later phase already started → this stage is effectively finished
+    const later = RESEARCH_PHASES.slice(phaseIndex + 1);
+    if (events.some((e) => later.includes(e.phase))) return "done";
+    if (
+      runStatus === "completed" ||
+      runStatus === "partial" ||
+      runStatus === "failed"
+    ) {
+      return "done";
+    }
+    return "active";
+  }
   return "waiting";
 }
 
@@ -66,12 +83,12 @@ export function PhaseRail({
   const [open, setOpen] = useState<AnalysisPhase | null>(null);
   const items = useMemo(
     () =>
-      RESEARCH_PHASES.map((phase) => {
-        const state = derive(events, phase);
+      RESEARCH_PHASES.map((phase, idx) => {
+        const state = derive(events, phase, idx, runStatus);
         const detail = [...events].reverse().find((e) => e.phase === phase);
         return { phase, state, detail };
       }),
-    [events]
+    [events, runStatus]
   );
 
   return (

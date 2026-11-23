@@ -21,6 +21,13 @@ def test_hs_to_wits_product_mapping():
     assert "aggregate" in label.lower() or "sector" in label.lower() or "HS" in label
     code2, _ = hs_to_wits_product(None)
     assert code2 == "Total"
+    # Ceramics / stone — must not fall through to Total
+    code3, label3 = hs_to_wits_product("6907")
+    assert code3 == "68-71_StoneGlas"
+    assert "Total" not in code3
+    assert "68" in label3 or "71" in label3 or "Stone" in label3
+    code4, _ = hs_to_wits_product("4101")
+    assert code4 == "41-43_HidesSkin"
 
 
 def test_wits_fetch_uses_cache_and_records(monkeypatch):
@@ -187,6 +194,8 @@ def test_to_markets_ranks_records():
     assert pr.ok
     assert [m.country_code for m in pr.markets] == ["DE", "TR", "AE"]
     assert any(m.key == "data_quality" for m in pr.markets[0].metrics)
+    assert any(m.key == "pool_share" for m in pr.markets[0].metrics)
+    assert any("چرا این کشور" in e for e in pr.markets[0].evidence)
 
 
 def test_registry_uses_trade_data_without_comtrade(monkeypatch):

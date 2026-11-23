@@ -1,5 +1,6 @@
 import { fa } from "@/lib/i18n/fa";
 import type { ConfidenceLevel, Market, RunStatus } from "@/types";
+import { LoadingState } from "@/components/LoadingState";
 
 function CockpitConfidence({ level }: { level: ConfidenceLevel }) {
   const tone =
@@ -41,10 +42,23 @@ export function ProgressiveResults({
       ) : null}
 
       {!markets.length && !blocked ? (
-        <div className="rounded-xl border border-dashed border-[var(--cockpit-line)] px-3 py-6 text-center">
-          <p className="text-sm font-medium text-white">{fa.cockpit.noResults}</p>
-          <p className="mt-1 text-xs text-[var(--cockpit-muted)]">{fa.cockpit.noResultsHint}</p>
-        </div>
+        status === "running" || status === "queued" ? (
+          <LoadingState
+            label={fa.cockpit.noResults}
+            hint={fa.cockpit.noResultsHint}
+            stages={[
+              fa.loading.stages.prepare,
+              fa.loading.stages.fetch,
+              fa.loading.stages.analyze,
+              fa.loading.stages.almost,
+            ]}
+          />
+        ) : (
+          <div className="rounded-xl border border-dashed border-[var(--cockpit-line)] px-3 py-6 text-center">
+            <p className="text-sm font-medium text-white">{fa.cockpit.noResults}</p>
+            <p className="mt-1 text-xs text-[var(--cockpit-muted)]">{fa.cockpit.noResultsHint}</p>
+          </div>
+        )
       ) : null}
 
       {markets.length ? (

@@ -5,11 +5,12 @@ Never logs secrets. Phase C: live-capable; without key → unavailable (no paid 
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import httpx
 
 from app.providers.base import ProviderResult
-from app.schemas.contracts import Source
+from app.schemas.contracts import Buyer, Source
 
 
 def _now() -> str:
@@ -90,15 +91,19 @@ class KeyedTavilySearch:
             )
 
     def search_buyers(self, product: str, country_code: str) -> ProviderResult:
+        """Return source-backed *candidate* buyers from search hits — no fake contacts."""
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 r = client.post(
                     "https://api.tavily.com/search",
                     json={
                         "api_key": self.api_key,
-                        "query": f"{product} importer buyer company {country_code}",
+                        "query": (
+                            f"{product} importer OR buyer OR distributor "
+                            f"company {country_code}"
+                        ),
                         "search_depth": "basic",
-                        "max_results": 5,
+                        "max_results": 8,
                     },
                 )
             if r.status_code == 429:
@@ -116,25 +121,72 @@ class KeyedTavilySearch:
                     error_code="PROVIDER_UNAVAILABLE",
                 )
             results = (r.json() or {}).get("results") or []
-            # Honest: search hits ≠ verified buyers — return empty with sources
-            sources = [
-                Source(
-                    url=item.get("url") or "https://tavily.com",
-                    title=item.get("title") or "search hit",
+            buyers: list[Buyer] = []
+            sources: list[Source] = []
+            seen_hosts: set[str] = set()
+
+            for item in results:
+                url = (item.get("url") or "").strip()
+                title = (item.get("title") or "").strip()
+                snippet = (item.get("content") or item.get("snippet") or "").strip()
+                if not url or not title:
+                    continue
+                host = urlparse(url).netloc.lower().removeprefix("www.")
+                if not host or host in seen_hosts:
+                    continue
+                seen_hosts.add(host)
+
+                company = title.split("|")[0].split(" - ")[0].split(" – ")[0].strip()
+                company = company[:140] or host
+                src = Source(
+                    url=url,
+                    title=title[:200],
                     publisher="Tavily",
                     fetched_at=_now(),
                     provider=self.id,
-                    reliability_note="نتیجه جست‌وجو — خریدار تأییدشده نیست",
+                    reliability_note=(
+                        "نتیجه جست‌وجوی زنده — خریدار تأییدشده/تماس‌شده نیست؛ نیازمند بررسی انسانی"
+                    ),
                 )
-                for item in results
-                if item.get("url")
-            ]
+                sources.append(src)
+                fit: list[str] = []
+                if snippet:
+                    fit.append(snippet[:320])
+                fit.append(f"منبع وب: {title[:160]}")
+                fit.append(f"کشور هدف جست‌وجو: {country_code} · محصول: {product}")
+                buyers.append(
+                    Buyer(
+                        company_name=company,
+                        website=url,
+                        country=country_code,
+                        business_type="کاندید وب‌جست‌وجو (نقش تأییدنشده)",
+                        fit_evidence=fit,
+                        contact=None,
+                        verification_status="needs_review",
+                        sources=[src],
+                    )
+                )
+                if len(buyers) >= 10:
+                    break
+
+            if not buyers:
+                return ProviderResult(
+                    ok=False,
+                    message_fa="نتیجهٔ قابل‌استفاده‌ای برای کاندید خریدار پیدا نشد.",
+                    buyers=[],
+                    sources=sources,
+                    error_code="NO_BUYERS",
+                )
+
             return ProviderResult(
-                ok=False,
-                message_fa="نتایج جست‌وجو برای خریدار یافت شد اما بدون راستی‌آزمایی فهرست خریدار ساخته نمی‌شود.",
-                buyers=[],
+                ok=True,
+                message_fa=(
+                    f"{len(buyers)} کاندید خریدار از نتایج جست‌وجو "
+                    "(نیازمند بررسی — بدون تماس ساختگی)."
+                ),
+                buyers=buyers,
                 sources=sources,
-                error_code="NO_BUYERS",
+                meta={"raw_count": len(results), "candidate_count": len(buyers)},
             )
         except Exception as exc:
             return ProviderResult(

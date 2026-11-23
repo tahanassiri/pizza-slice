@@ -38,7 +38,7 @@ def trade_result_to_markets(
     origin: str,
     limit: int = 3,
 ) -> ProviderResult:
-    """Build ranked markets from numeric trade records. No fake ranks without values."""
+    """Rank markets by product-sector import value (share among pool). No fake ranks."""
     sources = _sources_from_result(result)
 
     if result.quality_status == "unavailable" or not result.records:
@@ -64,11 +64,9 @@ def trade_result_to_markets(
             },
         )
 
-    ranked = sorted(
-        [r for r in result.records if r.value is not None],
-        key=lambda r: float(r.value or 0),
-        reverse=True,
-    )[:limit]
+    numeric = [r for r in result.records if r.value is not None and float(r.value) > 0]
+    pool_total = sum(float(r.value or 0) for r in numeric)
+    ranked = sorted(numeric, key=lambda r: float(r.value or 0), reverse=True)[:limit]
 
     if not ranked:
         return ProviderResult(
@@ -88,25 +86,43 @@ def trade_result_to_markets(
         year = rec.year
         value = float(rec.value or 0)
         unit = rec.unit or result.unit or "USD"
+        share = (value / pool_total * 100.0) if pool_total > 0 else 0.0
         market_sources = [
             s
             for s in sources
             if rec.reporter_iso3 in (s.title or "") or rec.reporter_iso3 in (s.url or "")
         ] or sources[:1]
 
+        is_aggregate = (
+            "aggregate" in (rec.product_label or "").lower()
+            or "Total" in (rec.product_code or "")
+            or "sector" in (rec.product_label or "").lower()
+        )
+
         evidence = [
             (
-                f"{rec.flow} value ({year}): {value:,.0f} {unit} "
-                f"— منبع: {result.source_name}"
+                f"چرا این کشور: رتبه {i} از نظر ارزش واردات «{rec.product_code}» "
+                f"در مجموعهٔ گزارش‌دهندگان بررسی‌شده "
+                f"({share:.1f}% از مجموع pool · {value:,.0f} {unit} · سال {year})."
             ),
-            f"پوشش: {rec.product_label}",
+            (
+                f"منبع: {result.source_name} · شاخص: {rec.flow} · "
+                f"واحد: {unit} · کیفیت: {result.quality_status}"
+            ),
+            f"پوشش محصول: {rec.product_label}",
         ]
         if result.hs_code:
             evidence.append(
-                f"HS: {result.hs_code}"
+                f"HS ورودی: {result.hs_code}"
                 + (f" (revision {result.hs_revision})" if result.hs_revision else "")
+                + f" → گروه WITS: {rec.product_code}"
             )
-        evidence.append(f"کیفیت داده: {result.quality_status}")
+        if is_aggregate:
+            evidence.append(
+                "برچسب: دادهٔ گروهی/کل است — نه تجارت دوجانبهٔ دقیق HS6؛ عدد ساختگی نیست."
+            )
+        if result.quality_status == "partial":
+            evidence.append("وضعیت: داده ناقص — رتبه‌بندی با شواهد موجود و برچسب‌خورده.")
 
         markets.append(
             Market(
@@ -115,7 +131,7 @@ def trade_result_to_markets(
                 rank=i,
                 evidence=evidence,
                 opportunities=[
-                    "بازار با واردات قابل‌توجه در پوشش داده‌شده؛ نیاز به اعتبارسنجی تعرفه و کانال",
+                    "واردات قابل‌توجه در پوشش داده‌شده؛ تعرفه و کانال توزیع را جداگانه بررسی کنید",
                 ],
                 risks=[
                     *result.warnings[:2],
@@ -124,10 +140,17 @@ def trade_result_to_markets(
                 metrics=[
                     MarketMetric(
                         key="trade_value",
-                        label_fa=f"ارزش تجارت ({year})",
+                        label_fa=f"ارزش واردات گروه ({year})",
                         value=f"{value:,.0f}",
                         unit=unit,
                         estimated=bool(rec.estimated),
+                    ),
+                    MarketMetric(
+                        key="pool_share",
+                        label_fa="سهم در مجموعه بررسی‌شده",
+                        value=f"{share:.1f}",
+                        unit="%",
+                        estimated=False,
                     ),
                     MarketMetric(
                         key="data_quality",
@@ -150,15 +173,19 @@ def trade_result_to_markets(
                         unit=None,
                         estimated=False,
                     ),
+                    MarketMetric(
+                        key="wits_product",
+                        label_fa="کد گروه WITS",
+                        value=rec.product_code or "—",
+                        unit=None,
+                        estimated=False,
+                    ),
                 ],
                 confidence=confidence,  # type: ignore[arg-type]
                 unknowns=[
                     "تعرفه دقیق برای HS کامل",
                     "خریداران تأییدشده",
-                    *(["داده HS6 دوجانبه"] if "aggregate" in (rec.product_label or "").lower()
-                      or "Total" in (rec.product_code or "")
-                      or "sector" in (rec.product_label or "").lower()
-                      else []),
+                    *(["داده HS6 دوجانبه"] if is_aggregate else []),
                 ],
                 sources=market_sources,
             )
@@ -185,5 +212,7 @@ def trade_result_to_markets(
             "cache_hit": result.cache_hit,
             "product": product,
             "origin": origin,
+            "pool_total": pool_total,
+            "pool_size": len(numeric),
         },
     )
