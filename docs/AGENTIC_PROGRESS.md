@@ -1,50 +1,69 @@
 # Agentic Progress Log
 
 ## Phase 0 — Inventory
-- **Implemented:** Gap map, implementation plan, branch from main `d6b757e`, baseline inventory
-- **Tests:** pytest baseline 60 passed
+- **Implemented:** Gap map, plan, branch from main `d6b757e`
+- **Tests:** baseline then expanded
 - **Pass-Fail:** PASS
-- **Files:** `docs/AGENTIC_GAP_MAP.md`, `docs/AGENTIC_IMPLEMENTATION_PLAN.md`, `docs/AGENTIC_PROGRESS.md`
+- **Files:** `docs/AGENTIC_GAP_MAP.md`, `AGENTIC_IMPLEMENTATION_PLAN.md`, `AGENTIC_PROGRESS.md`
 - **Remaining:** —
 
 ## Phase 1 — Agent infra + memory
-- **Implemented:** Durable tasks/leases, knowledge repo + TTL, evidence/claims, agent budgets + usage audit, tool allowlist executor, state machine, migration `003`
-- **Tests:** `test_agentic_core.py` memory/budget/state
+- **Implemented:** tasks/leases, knowledge+TTL, evidence/claims, budgets, tool executor, migration 003
+- **Tests:** `test_agentic_core.py`
 - **Pass-Fail:** PASS
-- **Files:** `app/agents/*`, `app/tools/*`, `app/knowledge/*`, `app/jobs/*`, `app/evidence/*`, `models/entities.py`, `alembic/versions/003_agentic_memory.py`
-- **Remaining:** deeper singleflight lock across processes (SQLite MVP OK)
+- **Files:** `app/{agents,tools,knowledge,jobs,evidence}/`, `003_agentic_memory.py`
+- **Remaining:** multi-node singleflight
 
 ## Phase 2 — Market Research
-- **Implemented:** Agentic pipeline replaces fixed orchestrator; product plan; trade tool with data_scope; deterministic scorer; recommended≤3 + risky≤2; memory hit/stale reuse; incremental SSE payloads
-- **Tests:** scorer unit + pipeline integration (WITS mocked) + existing suite
+- **Implemented:** agentic pipeline, plan, trade tool, deterministic scorer, recommended+risky, memory reuse, SSE payloads
+- **Tests:** scorer + pipeline integrations
 - **Pass-Fail:** PASS
-- **Files:** `agents/research_runner.py`, `agents/market_scorer.py`, `agents/orchestrator_controller.py`, `services/orchestrator.py`
-- **Remaining:** richer regulation/legal scoring when official sources available
+- **Files:** `research_runner.py`, `market_scorer.py`, `orchestrator_controller.py`
+- **Remaining:** richer official legal adapters
 
 ## Phase 3 — Buyers
-- **Implemented:** Human gate via select→buyer job only; verify_company rejects directory/seller SEO; categories; per-card SSE; company_profiles persistence
-- **Tests:** seller rejection unit + buyer background durable job
+- **Implemented:** select gate, verify_company, categories, per-card SSE, company_profiles
+- **Tests:** seller rejection + buyer background
 - **Pass-Fail:** PASS
-- **Files:** `agents/buyer_runner.py`, `tools/verify_company.py`, `services/runs.py`
-- **Remaining:** multilingual local-language query packs per destination
+- **Files:** `buyer_runner.py`, `verify_company.py`, `runs.py`
+- **Remaining:** local-language query packs
 
 ## Phase 4 — Economics
-- **Implemented:** CostItem status provenance; break-even + sensitivity; no fabricated profit when missing; calculate_economics tool
-- **Tests:** existing feasibility tests + calc paths
+- **Implemented:** cost status, break-even, sensitivity, no fabricated profit
+- **Tests:** feasibility suite + §9.10
 - **Pass-Fail:** PASS
-- **Files:** `schemas/contracts.py`, `services/feasibility_calc.py`, `tools/executor.py`
-- **Remaining:** live freight/tariff quote adapters (plug-in; fail honest without keys)
+- **Files:** `feasibility_calc.py`, contracts
+- **Remaining:** live quote adapters
 
 ## Phase 5 — UI/Admin
-- **Implemented:** MarketComparison recommended vs risky sections; sector warning; cost type fields; admin `/budgets` + `/knowledge` + enriched `/usage`
-- **Tests:** backend 68 passed; FE type fields updated (lint/typecheck not run if deps missing)
-- **Pass-Fail:** PASS (backend); FE visual NOT_RUN in CI here
-- **Files:** `MarketComparison.tsx`, `fa.ts`, `types/index.ts`, `api/admin.py`, `admin_service.py`
-- **Remaining:** admin UI form widgets for budget sliders (API ready)
+- **Implemented:** recommended vs risky UI; admin budgets/knowledge/usage
+- **Tests:** web typecheck/lint/build PASS
+- **Pass-Fail:** PASS
+- **Files:** `MarketComparison.tsx`, `admin.py`
+- **Remaining:** admin budget UI widgets
 
-## Phase 6 — Hardening
-- **Implemented:** SSRF page fetch guards; budget enforce; lease recovery on startup; interrupt marking retained; docs + env.example notes
-- **Tests:** `python3 -m pytest tests/ -q` → **68 passed**
-- **Pass-Fail:** PASS (automated backend); Playwright smoke NOT_RUN (no browser E2E wired in this env)
-- **Files:** docs progress/gap/plan; delivery copy in Project store
-- **Remaining:** VPS deploy intentionally out of scope; paid provider keys not present → live tool paths fail honestly
+## Phase 6 — Hardening + §9 acceptance
+- **Implemented:** SSRF guards, budget enforce, lease recovery, §9.1–15 automated tests, rate-limit test isolation
+- **Tests:** **83 passed** (`pytest`); web typecheck/lint/build PASS; Playwright NOT_RUN (no dep)
+- **Pass-Fail:** PASS (automated); VPS deploy **BLOCKED** (SSH auth)
+- **Files:** `tests/test_section9_acceptance.py`, `tests/conftest.py`
+- **Remaining:** VPS deploy when SSH credential available
+
+## §9 Acceptance matrix
+| # | Result | Test |
+|---|--------|------|
+| 1 | PASS | `test_s9_1_research_plan_and_usage_audit` |
+| 2 | PASS | `test_s9_2_different_products_distinct_memory_and_sector_label` |
+| 3 | PASS | `test_s9_3_reference_year_on_markets_and_stale_flag` |
+| 4 | PASS | `test_s9_4_memory_hit_surfaces_via_events` |
+| 5 | PASS | `test_s9_5_stub_providers_no_invented_markets_or_buyers` |
+| 6 | PASS | `test_s9_6_unknown_criteria_not_hidden` |
+| 7 | PASS | `test_s9_7_recommended_and_risky_split` |
+| 8 | PASS | `test_s9_8_buyers_gate_requires_selection` |
+| 9 | PASS | `test_s9_9_seller_and_title_only_not_verified` |
+| 10 | PASS | `test_s9_10_calculator_scenarios_and_missing` |
+| 11 | PASS | `test_s9_11_sse_resume_and_lease_recovery` |
+| 12 | PASS | `test_s9_12_privacy_and_prompt_injection_guard` |
+| 13 | PASS | `test_s9_13_budget_enforced_server_side` |
+| 14 | PASS* | pytest+typecheck+lint+build; Playwright NOT_RUN |
+| 15 | PASS | docs + `agentic-final-report.md` |

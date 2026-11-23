@@ -28,6 +28,12 @@ from app.services.admin_service import ensure_providers
 
 @pytest.fixture(autouse=True)
 def _reset_db():
+    from app.core import request_budget
+
+    # In-memory rate limits must not bleed across tests (full-suite 429s).
+    with request_budget._lock:
+        request_budget._requests.clear()
+
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
