@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock, patch
-
 from app.core.security import create_admin_session, validate_admin_session
 from app.db.session import SessionLocal
 from app.events.store import list_events
@@ -72,12 +70,11 @@ def test_provider_missing_key_honest_buyers(client):
         "/api/runs", json={"product": "پسته", "origin_country": "ایران"}
     ).json()["run_id"]
     _wait(client, rid)
-    snap = client.post(
-        f"/api/runs/{rid}/select-country", json={"country_code": "AE"}
-    ).json()
+    rejected = client.post(f"/api/runs/{rid}/select-country", json={"country_code": "AE"})
+    assert rejected.status_code == 422
+    snap = client.get(f"/api/runs/{rid}").json()
     assert snap["buyers"] == []
-    # Honest empty — no fabricated companies
-    assert snap["run"]["selected_country"] == "AE"
+    assert snap["run"]["selected_country"] is None
 
 
 def test_quota_exhausted_surface(client, monkeypatch):
@@ -97,23 +94,22 @@ def test_quota_exhausted_surface(client, monkeypatch):
         except BudgetExceeded:
             pass
 
-    # Legacy KeyedTavilySearch still fails honestly if somehow called
-    class RateLimited:
-        status_code = 429
+    from app.providers.model_clearance import classify_probe
 
-        def json(self):
-            return {}
-
-    with patch("httpx.Client") as client_cls:
-        http = MagicMock()
-        http.__enter__.return_value = http
-        http.post.return_value = RateLimited()
-        client_cls.return_value = http
-        from app.providers.keyed import KeyedTavilySearch
-
-        result = KeyedTavilySearch("tvly-test-key").search_markets("پسته", "ایران")
-        assert result.ok is False
-        assert result.error_code == "RATE_LIMITED"
+    assert (
+        classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=429, body="", error=None)
+        == "Rate-limited"
+    )
+    assert (
+        classify_probe(
+            provider="google",
+            model_id="gemini-4-hydrogen",
+            http_status=200,
+            body="ok",
+            error=None,
+        )
+        == "Billing permission required"
+    )
 
 
 def test_admin_session_ttl_and_revoke(client, admin_token):

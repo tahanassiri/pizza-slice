@@ -18,5 +18,6 @@ async def run_market_research(
     run: Run,
     executor: ToolExecutor,
     emit: EmitFn,
+    **kwargs: Any,
 ) -> dict[str, Any]:
-    return await run_decision_loop(db, run, executor, emit)
+    return await run_decision_loop(db, run, executor, emit, **kwargs)

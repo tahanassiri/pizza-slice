@@ -164,7 +164,13 @@ def start_buyer_search(db: Session, run_id: str, country_code: str) -> RunSnapsh
         if not run:
             raise AppError("RUN_NOT_FOUND", "اجرا یافت نشد.", 404)
         choices = {market.country_code for market in _load_json_list(run.markets_json, Market)}
-        if choices and code not in choices:
+        if not choices:
+            raise AppError(
+                "INVALID_COUNTRY",
+                "بازار معتبری برای این اجرا ثبت نشده و کشور پشتیبانی نمی‌شود.",
+                422,
+            )
+        if code not in choices:
             raise AppError("INVALID_COUNTRY", "کشور در بازارهای این اجرا نیست.", 422)
         job = db.get(BuyerSearchRow, run_id)
         if job and job.country_code == code and job.status in _active_buyer_statuses:
@@ -205,22 +211,23 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
         db.commit()
         # Persist event BEFORE publish so SSE replay never loses cards
         try:
-            evt = append_event(
+            evt, created = append_event(
                 db,
                 run_id=run_id,
-                event_id=f"evt_{secrets.token_hex(8)}",
+                event_id=f"evt_{run_id}_buyers_started_{country_code}",
                 phase="buyers",
                 status="running",
                 message_fa=f"شروع تحقیق خریدار در {country_code}",
                 payload={"event_type": "buyers.job_started", "country_code": country_code},
             )
             db.commit()
-            try:
-                import asyncio
+            if created:
+                try:
+                    import asyncio
 
-                asyncio.run(broadcaster.publish(run_id, evt.model_dump()))
-            except Exception:
-                pass
+                    asyncio.run(broadcaster.publish(run_id, evt.model_dump()))
+                except Exception:
+                    pass
         except Exception:
             db.rollback()
 
@@ -233,18 +240,13 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
         with SessionLocal() as db:
             bundle = resolve_providers(db)
             search = getattr(bundle, "search", None)
-            mode = getattr(bundle, "mode", "auto")
-            # Avoid live page fetches in stub/offline mode (honest candidates only).
-            use_fetch = mode != "stub"
-            executor = None
-            if use_fetch and search is not None:
-                executor = ToolExecutor(
-                    db,
-                    run_id=run_id,
-                    search=search,
-                    trade_service=getattr(bundle, "trade_service", None),
-                    llm=getattr(bundle, "llm", None),
-                )
+            executor = ToolExecutor(
+                db,
+                run_id=run_id,
+                search=search,
+                trade_service=getattr(bundle, "trade_service", None),
+                llm=getattr(bundle, "llm", None),
+            )
             buyers, sources, status, error_code, error_message = discover_and_verify_buyers(
                 db,
                 run_id=run_id,
@@ -257,10 +259,10 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
             # Emit per verified/needs_review card — commit then publish (SSE replay safe)
             for buyer in buyers:
                 try:
-                    evt = append_event(
+                    evt, created = append_event(
                         db,
                         run_id=run_id,
-                        event_id=f"evt_{secrets.token_hex(8)}",
+                        event_id=f"evt_{run_id}_buyer_{country_code}_{_domain_key(buyer)}",
                         phase="buyers",
                         status="partial",
                         message_fa=f"کارت خریدار: {buyer.company_name}",
@@ -278,12 +280,13 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
                         source_refs=buyer.sources or None,
                     )
                     db.commit()
-                    try:
-                        import asyncio
+                    if created:
+                        try:
+                            import asyncio
 
-                        asyncio.run(broadcaster.publish(run_id, evt.model_dump()))
-                    except Exception:
-                        pass
+                            asyncio.run(broadcaster.publish(run_id, evt.model_dump()))
+                        except Exception:
+                            pass
                 except Exception:
                     db.rollback()
     except Exception:
@@ -311,19 +314,30 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
         db.commit()
 
 
-def mark_interrupted_runs(db: Session) -> None:
-    message = "پردازش با توقف سرویس قطع شد. دوباره تلاش کنید."
-    db.execute(
-        update(Run)
-        .where(Run.report_json.is_(None), Run.status.in_(("queued", "running", "completed", "partial")))
-        .values(status="failed", error_code="RUN_INTERRUPTED", error_message_fa=message, error_retryable=1)
+def mark_interrupted_runs(db: Session) -> list[str]:
+    """Startup recovery. Runs are interrupted and resumable, not failed."""
+
+    from app.jobs.durable import recover_on_startup
+
+    return recover_on_startup(db)
+
+
+def _domain_key(buyer) -> str:
+    import hashlib
+
+    raw = (buyer.website or buyer.company_name or "unknown").lower()
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def schedule_buyer_resume(run_id: str, job_id: str) -> None:
+    _buyer_pool.submit(_run_buyer_search, run_id, job_id)
+
+
+def buyer_jobs_to_resume(db: Session) -> list[tuple[str, str]]:
+    rows = list(
+        db.scalars(select(BuyerSearchRow).where(BuyerSearchRow.status == "queued")).all()
     )
-    db.execute(
-        update(BuyerSearchRow)
-        .where(BuyerSearchRow.status.in_(_active_buyer_statuses))
-        .values(status="failed", error_code="RUN_INTERRUPTED", error_message_fa=message, updated_at=datetime.now(timezone.utc))
-    )
-    db.commit()
+    return [(row.run_id, row.id) for row in rows]
 
 
 def select_country(db: Session, run_id: str, country_code: str) -> RunSnapshot:

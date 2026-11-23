@@ -1,5 +1,1 @@
-"""Agentic research runtime — orchestrator controller + bounded research loops."""
-
-from app.agents.orchestrator_controller import run_agentic_pipeline, schedule_agentic_pipeline
-
-__all__ = ["run_agentic_pipeline", "schedule_agentic_pipeline"]
+"""Agent package. Import submodules directly so policy imports do not load the pipeline."""

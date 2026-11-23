@@ -1,72 +1,40 @@
-"""Buyer search — source-backed candidates, no fabricated contacts."""
+"""Buyer discovery — companies only from source hits, no fabricated contacts."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-from app.providers.keyed import KeyedTavilySearch
+from app.agents.buyer_runner import candidates_from_search_hits
 
 
-def test_tavily_search_buyers_builds_candidates_without_contacts():
-    payload = {
-        "results": [
-            {
-                "url": "https://www.acme-import.de/pistachio",
-                "title": "ACME Import GmbH - Food importers",
-                "content": "German importer of nuts and dried fruit including pistachio.",
-            },
-            {
-                "url": "https://www.acme-import.de/about",
-                "title": "About ACME",
-                "content": "duplicate host should be skipped",
-            },
-            {
-                "url": "https://buyers.example.org/list",
-                "title": "Example Buyers Directory | Trade",
-                "content": "Directory listing of food buyers in DE.",
-            },
-        ]
-    }
-
-    class FakeResp:
-        status_code = 200
-
-        def json(self):
-            return payload
-
-    search = KeyedTavilySearch(api_key="test-key")
-    with patch("httpx.Client") as client_cls:
-        http = MagicMock()
-        http.__enter__.return_value = http
-        http.post.return_value = FakeResp()
-        client_cls.return_value = http
-
-        result = search.search_buyers("pistachio", "DE")
-
-    assert result.ok is True
-    assert len(result.buyers) == 2
-    assert all(b.contact is None for b in result.buyers)
-    assert all(b.verification_status == "needs_review" for b in result.buyers)
-    assert all(b.website for b in result.buyers)
-    assert all(b.sources for b in result.buyers)
-    assert "ACME Import GmbH" in result.buyers[0].company_name
+def test_search_hits_become_candidates_without_contacts():
+    results = [
+        {
+            "url": "https://www.acme-import.de/pistachio",
+            "title": "ACME Import GmbH - Food importers",
+            "snippet": "German importer of nuts and dried fruit including pistachio.",
+            "publisher": "web",
+            "fetched_at": "2024-01-01T00:00:00+00:00",
+            "provider": "duckduckgo_html",
+        },
+        {
+            "url": "https://www.acme-import.de/about",
+            "title": "About ACME",
+            "snippet": "duplicate host should still be a separate page until verify dedupes",
+            "provider": "duckduckgo_html",
+        },
+        {
+            "url": "https://en.wikipedia.org/wiki/Pistachio",
+            "title": "Pistachio",
+            "snippet": "encyclopedia",
+            "provider": "wikipedia_free",
+        },
+    ]
+    buyers = candidates_from_search_hits(results, country="DE", product="pistachio", role="importer")
+    assert len(buyers) == 2
+    assert all(buyer.contact is None for buyer in buyers)
+    assert all(buyer.sources for buyer in buyers)
+    assert "ACME Import GmbH" in buyers[0].company_name
+    assert all("wikipedia.org" not in (buyer.website or "") for buyer in buyers)
 
 
-def test_tavily_search_buyers_empty_when_no_hits():
-    class FakeResp:
-        status_code = 200
-
-        def json(self):
-            return {"results": []}
-
-    search = KeyedTavilySearch(api_key="test-key")
-    with patch("httpx.Client") as client_cls:
-        http = MagicMock()
-        http.__enter__.return_value = http
-        http.post.return_value = FakeResp()
-        client_cls.return_value = http
-        result = search.search_buyers("x", "AE")
-
-    assert result.ok is False
-    assert result.buyers == []
-    assert result.error_code == "NO_BUYERS"
+def test_empty_hits_produce_no_companies():
+    assert candidates_from_search_hits([], country="AE", product="x", role="importer") == []

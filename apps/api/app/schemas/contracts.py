@@ -309,6 +309,7 @@ class TestConnectionOut(BaseModel):
     ok: bool
     message_fa: str
     checked: bool = False
+    connection_status: str = "Failed"
 
 
 class HealthOut(BaseModel):

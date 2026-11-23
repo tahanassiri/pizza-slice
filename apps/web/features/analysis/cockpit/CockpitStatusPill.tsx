@@ -11,6 +11,7 @@ const map: Record<RunStatus, { label: string; className: string }> = {
   rate_limited: { label: fa.status.rate_limited, className: "text-[var(--cockpit-gold)] border-[color-mix(in_srgb,var(--cockpit-gold)_45%,transparent)] bg-[var(--cockpit-gold-soft)]" },
   provider_unavailable: { label: fa.status.provider_unavailable, className: "text-[var(--cockpit-danger)] border-[color-mix(in_srgb,var(--cockpit-danger)_45%,transparent)] bg-[var(--cockpit-danger-soft)]" },
   cancelled: { label: fa.status.cancelled, className: "text-[var(--cockpit-muted)] border-[var(--cockpit-line)]" },
+  interrupted: { label: fa.status.interrupted, className: "text-[var(--cockpit-gold)] border-[color-mix(in_srgb,var(--cockpit-gold)_45%,transparent)] bg-[var(--cockpit-gold-soft)]" },
 };
 
 export function CockpitStatusPill({ status }: { status: RunStatus }) {

@@ -245,7 +245,7 @@ def test_select_country_buyers_honest_empty(client):
         f"/api/runs/{run_id}/select-country",
         json={"country_code": "AE"},
     )
-    assert res.status_code == 200
-    snap = res.json()
-    assert snap["run"]["selected_country"] == "AE"
+    assert res.status_code == 422
+    snap = client.get(f"/api/runs/{run_id}").json()
+    assert snap["run"]["selected_country"] is None
     assert snap["buyers"] == []

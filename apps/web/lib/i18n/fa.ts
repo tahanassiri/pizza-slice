@@ -107,6 +107,7 @@ export const fa = {
     rate_limited: "محدودیت سهمیه",
     provider_unavailable: "سرویس در دسترس نیست",
     cancelled: "لغو شده",
+    interrupted: "قطع‌شده، قابل ادامه",
   } as Record<string, string>,
 
   phase: {
@@ -251,10 +252,10 @@ export const fa = {
     clearProviderKey: "پاک کردن کلید",
     researchProviders: "ارائه‌دهندگان تحقیق",
     researchProvidersHint:
-      "کلید Tavily و Exa اختیاری است. UN Comtrade کلید اجباری ندارد و پیش‌فرض خاموش است.",
-    tradeSources: "منابع آمار تجارت",
+      "جست‌وجوی پژوهش از وب بدون کلید است. Tavily، Exa، WITS و Comtrade مسیر اجباری نیستند.",
+    tradeSources: "منابع پژوهش",
     tradeSourcesHint:
-      "ترتیب بازیابی: WITS → تحقیق موجود → Comtrade اختیاری. عدد ساختگی تولید نمی‌شود.",
+      "وب رایگان و مدل فعال. آمار گروهی به‌جای تقاضای محصول نشان داده نمی‌شود و عدد ساختگی تولید نمی‌شود.",
     enableProvider: "فعال‌سازی",
     disableProvider: "غیرفعال‌سازی",
     providerKeyPlaceholder: "کلید API را بچسبانید… (برای Comtrade اختیاری)",

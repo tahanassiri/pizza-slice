@@ -72,28 +72,37 @@ def score_from_trade_records(
         iso2 = ISO3_TO_ISO2.get(iso3, iso3[:2])
         value = float(rec["value"])
         share = value / pool_total if pool_total else 0.0
-        # demand score from share (relative) — not absolute invented demand
-        demand = min(1.0, share * 3.0)  # top ~33% share → 1.0
         year = rec.get("year") or reference_year
+        product_specific = data_scope == "hs6"
+        # Sector/total aggregates are context, not a product demand score.
+        if product_specific:
+            demand_value = min(1.0, share)
+            demand_note = (
+                f"سهم نسبی در دادهٔ محصول‌محور HS6 ({share*100:.1f}%) از {source_name}"
+            )
+            demand_confidence = "low"
+        else:
+            demand_value = None
+            demand_note = (
+                f"آمار {data_scope} از {source_name} برای رتبهٔ محصول استفاده نمی‌شود "
+                f"(سهم گروهی {share*100:.1f}% فقط زمینه است)"
+            )
+            demand_confidence = "unknown"
 
-        # Without product-specific HS6, legal/payment/logistics unknown
         criteria = [
             _criterion(
                 "demand",
-                demand,
-                confidence="medium" if data_scope == "hs6" else "low",
-                note=(
-                    f"سهم نسبی واردات در pool ({share*100:.1f}%) از {source_name} "
-                    f"— دامنه داده: {data_scope}"
-                ),
-                refs=[source_name],
+                demand_value,
+                confidence=demand_confidence,
+                note=demand_note,
+                refs=[source_name] if product_specific else [],
                 date_scope=str(year) if year else None,
             ),
             _criterion(
                 "access",
-                0.55 if iso2 in {"AE", "TR", "IQ", "OM", "AZ", "AM", "GE", "PK"} else 0.4,
-                confidence="low",
-                note="نزدیکی تجاری تقریبی بر اساس تجربه منطقه — نیازمند شواهد لجستیک",
+                None,
+                confidence="unknown",
+                note="دسترسی بازار بدون شاهد حمل/کانال نامعلوم است",
             ),
             _criterion(
                 "logistics",
@@ -130,42 +139,36 @@ def score_from_trade_records(
             total = sum((w.get(c.key, 0) / avail_w) * float(c.score_value) for c in known)
             total = round(total, 4)
 
-        # Cap recommendation quality when sector-only
-        if data_scope in {"sector", "total"} and quality_status != "verified":
-            # still allow recommended but mark low confidence via rationale
-            pass
-
+        # Trade rows do not crown markets. Recommendations require cited evidence ids.
+        if not product_specific:
+            total = None
         cards.append(
             MarketScoreCard(
                 country_code=iso2,
                 criteria=criteria,
                 weights=w,
-                total=total,
+                total=total if product_specific else None,
                 recommendation="watch",
                 data_scope=data_scope if data_scope in {"hs6", "sector", "total", "qualitative"} else "sector",  # type: ignore[arg-type]
                 rationale_fa=[
                     f"محصول: {product}",
                     f"منبع آمار: {source_name} ({data_scope})",
                     f"کیفیت: {quality_status}",
+                    "رتبه‌بندی پیشنهادی از این ردیف ساخته نمی‌شود",
                 ],
             )
         )
+    return cards
 
-    # Assign recommended / risky from totals among those with some demand signal
-    sortable = [c for c in cards if c.total is not None]
-    sortable.sort(key=lambda c: float(c.total or 0), reverse=True)
-    for i, c in enumerate(sortable):
-        if i < max_recommended:
-            c.recommendation = "recommended"
-            c.rationale_fa.append("پیشنهاد اولیه بر اساس سیگنال تقاضا — نه حکم قطعی صادرات")
-        elif i < max_recommended + max_risky:
-            c.recommendation = "risky"
-            c.rationale_fa.append(
-                "ظاهراً جذاب از نظر حجم گروه کالایی اما شواهد محصول‌محور/قانونی ناکافی یا ریسک بالا"
-            )
-        else:
-            c.recommendation = "watch"
-    return sortable
+
+_BANNED_SCORE_FILLERS = {0.35, 0.4, 0.5, 0.55}
+
+
+def _proposal_evidence_ids(proposal: dict) -> list[str]:
+    raw = proposal.get("evidence_ids")
+    if isinstance(raw, list) and raw:
+        return [str(item) for item in raw if str(item).strip()]
+    return []
 
 
 def score_from_evidence_markets(
@@ -173,52 +176,95 @@ def score_from_evidence_markets(
     *,
     product: str,
     sources: list[Source] | None = None,
+    evidence_index: dict[str, dict] | None = None,
 ) -> list[Market]:
-    """Build markets from LLM/agent proposals — only with evidence; never invent."""
+    """LLM proposes countries. The backend keeps a proposal only when it cites stored evidence.
+
+    Missing criteria stay unknown. Sector statistics cannot be relabeled as product demand.
+    """
+
+    index = evidence_index or {}
+    product_l = (product or "").strip().lower()
     cards: list[MarketScoreCard] = []
-    for p in proposals:
-        code = str(p.get("country_code") or "").upper().strip()
+    for proposal in proposals:
+        code = str(proposal.get("country_code") or "").upper().strip()
         if len(code) != 2:
             continue
-        evidence = [str(x) for x in (p.get("evidence") or []) if str(x).strip()]
-        if not evidence:
-            continue  # no evidence → skip (unknown stays unknown)
-        rec = str(p.get("recommendation") or "watch")
-        if rec not in {"recommended", "risky", "watch"}:
-            rec = "watch"
-        scope = str(p.get("data_scope") or "qualitative")
-        if scope not in {"hs6", "sector", "total", "qualitative"}:
-            scope = "qualitative"
+        evidence_ids = _proposal_evidence_ids(proposal)
+        if not evidence_ids:
+            continue
+        cited: list[dict] = []
+        rejected = False
+        for evidence_id in evidence_ids:
+            row = index.get(evidence_id)
+            if not row or not str(row.get("source_url") or "").strip():
+                rejected = True
+                break
+            row_product = str(row.get("product") or "").strip().lower()
+            row_country = str(row.get("country") or "").upper().strip()
+            if row_product and product_l and row_product != product_l and product_l not in row_product:
+                rejected = True
+                break
+            if row_country and row_country != code:
+                rejected = True
+                break
+            cited.append(row)
+        if rejected or not cited:
+            continue
+        scopes = {str(row.get("data_scope") or "qualitative") for row in cited}
+        sector_only = scopes <= {"sector", "total"}
+        requested = str(proposal.get("recommendation") or "watch")
+        if requested not in {"recommended", "risky", "watch"}:
+            requested = "watch"
+        requested_scope = str(proposal.get("data_scope") or "qualitative")
+        if requested_scope not in {"hs6", "sector", "total", "qualitative"}:
+            requested_scope = "qualitative"
+        if sector_only or requested_scope in {"sector", "total"}:
+            # Do not publish a product winner from group statistics.
+            continue
+        if "sector" in scopes or "total" in scopes:
+            requested_scope = "qualitative"
+        statements = [str(row.get("statement") or "")[:240] for row in cited if row.get("statement")]
+        periods = [str(row.get("period")) for row in cited if row.get("period")]
         criteria = [
             _criterion(
                 "demand",
-                0.55 if rec == "recommended" else 0.35 if rec == "risky" else None,
-                confidence="low",
-                note=evidence[0][:240],
-                refs=evidence[:2],
+                None,
+                confidence="unknown",
+                note=statements[0] if statements else "شاهد عددی تقاضا ثبت نشده",
+                refs=evidence_ids[:4],
+                date_scope=periods[0] if periods else None,
             ),
             _criterion("legal", None, confidence="unknown", note="نیازمند منبع رسمی روزآمد"),
             _criterion("logistics", None, confidence="unknown", note="نرخ حمل استعلام نشده"),
             _criterion("payment", None, confidence="unknown", note="مسیر پرداخت بررسی نشده"),
             _criterion("competition", None, confidence="unknown", note="رقابت تکمیل نشده"),
-            _criterion("access", 0.4, confidence="low", note="برآورد کیفی دسترسی"),
+            _criterion("access", None, confidence="unknown", note="دسترسی بدون شاهد نامعلوم است"),
         ]
+        for criterion in criteria:
+            if criterion.score_value in _BANNED_SCORE_FILLERS:
+                criterion.score_value = None
+                criterion.unknown = True
+                criterion.confidence = "unknown"
         cards.append(
             MarketScoreCard(
                 country_code=code,
                 criteria=criteria,
                 weights=clamp_weights(None),
-                total=0.5 if rec == "recommended" else 0.35 if rec == "risky" else None,
-                recommendation=rec,  # type: ignore[arg-type]
-                data_scope=scope,  # type: ignore[arg-type]
-                rationale_fa=[f"محصول: {product}", *evidence[:4], *(p.get("risks") or [])],
+                total=None,
+                recommendation=requested,  # type: ignore[arg-type]
+                data_scope=requested_scope,  # type: ignore[arg-type]
+                rationale_fa=[
+                    f"محصول: {product}",
+                    *[f"شاهد {evidence_id}" for evidence_id in evidence_ids[:4]],
+                    *statements[:3],
+                    *[str(item) for item in (proposal.get("risks") or [])[:3]],
+                ],
             )
         )
-    # Cap counts
-    recs = [c for c in cards if c.recommendation == "recommended"][:3]
-    risks = [c for c in cards if c.recommendation == "risky"][:2]
-    ordered = recs + risks
-    return cards_to_markets(ordered, sources=sources, source_name="agentic-web")
+    recommended = [card for card in cards if card.recommendation == "recommended"][:3]
+    risky = [card for card in cards if card.recommendation == "risky"][:2]
+    return cards_to_markets(recommended + risky, sources=sources, source_name="cited-evidence")
 
 
 def cards_to_markets(

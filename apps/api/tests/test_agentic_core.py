@@ -152,14 +152,15 @@ def test_scorer_no_fake_zeros_and_sector_label():
     )
     assert cards
     legal = next(c for c in cards[0].criteria if c.key == "legal")
+    demand = next(c for c in cards[0].criteria if c.key == "demand")
+    access = next(c for c in cards[0].criteria if c.key == "access")
     assert legal.unknown is True
     assert legal.score_value is None
-    markets = cards_to_markets(cards, reference_year=2022, source_name="WITS")
-    rec = [m for m in markets if any(x.key == "recommendation" and x.value == "recommended" for x in m.metrics)]
-    risky = [m for m in markets if any(x.key == "recommendation" and x.value == "risky" for x in m.metrics)]
-    assert 1 <= len(rec) <= 3
-    assert len(risky) <= 2
-    assert any(x.key == "data_scope" and x.value == "sector" for x in markets[0].metrics)
+    assert demand.score_value is None
+    assert access.score_value is None
+    assert all(card.recommendation == "watch" for card in cards)
+    assert all(card.data_scope == "sector" for card in cards)
+    assert cards_to_markets(cards, reference_year=2022, source_name="WITS") == []
 
 
 def test_clamp_weights_bounds():
