@@ -6,7 +6,7 @@ DEFAULT_LLM_MODEL env sets the initial/fallback selection — not a billing trig
 Freshness floor (Nov 2026):
 - Google: Gemini 3 Flash / 3.x Flash-Lite / 3.8 Flash and upward (no 1.5 / 2.0 / 2.5)
 - OpenAI: GPT-6 family (+ recent GPT-5.x still active); no GPT-3.5 / 4 / 4o / o1
-- DeepSeek: V4 Flash/Pro (+ flash alias); no chat/reasoner/V3 distill legacy
+- DeepSeek: V3.2 / R1 floor and newer (V4 Flash/Pro); no chat/reasoner/V3 distill
 """
 
 from __future__ import annotations
@@ -90,11 +90,14 @@ def _openai() -> list[LlmModelOption]:
 def _deepseek() -> list[LlmModelOption]:
     g = "deepseek"
     gl = "دیپ‌سیک (DeepSeek)"
-    # Latest API IDs only (V4 Flash/Pro era). Legacy chat/reasoner/V3 distill removed.
+    # Latest only: V3.2 / R1 floor and newer (V4 Flash/Pro). No chat/reasoner/V3 distill.
     rows = [
         ("deepseek-flash", "DeepSeek Flash (V4.1 Flash)", True),
         ("deepseek-v4-pro", "DeepSeek V4 Pro", False),
         ("deepseek-v4-flash", "DeepSeek V4 Flash (alias → Flash)", True),
+        ("deepseek-v3.2", "DeepSeek V3.2", False),
+        ("deepseek-r1", "DeepSeek R1", False),
+        ("deepseek-r1-0528", "DeepSeek R1-0528", False),
     ]
     return [
         LlmModelOption(id=i, label=lab, provider=g, group=g, group_label_fa=gl, is_flash=flash)
