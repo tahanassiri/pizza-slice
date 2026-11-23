@@ -15,10 +15,11 @@ import type {
 const ADMIN_TOKEN_KEY = "nova_admin_token";
 
 function apiBase(): string {
-  const base =
-    (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE_URL) ||
-    "http://127.0.0.1:8000";
-  return base.replace(/\/$/, "");
+  // Empty string = same-origin (Caddy/proxy). Unset falls back to local API.
+  if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE_URL !== undefined) {
+    return String(process.env.NEXT_PUBLIC_API_BASE_URL).replace(/\/$/, "");
+  }
+  return "http://127.0.0.1:8000";
 }
 
 function adminToken(): string | null {

@@ -3,14 +3,22 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ROOT = Path(__file__).resolve().parents[3]
-DATA_DIR = ROOT / "data"
+# config.py lives at apps/api/app/core/config.py → parents[2] == apps/api (/app in Docker)
+API_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DATA_DIR = API_ROOT / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+_ENV_FILES = tuple(
+    str(p)
+    for p in (API_ROOT / ".env", REPO_ROOT / ".env")
+    if p.is_file()
+)
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(ROOT / ".env"),
+        env_file=_ENV_FILES or None,
         env_file_encoding="utf-8",
         extra="ignore",
     )

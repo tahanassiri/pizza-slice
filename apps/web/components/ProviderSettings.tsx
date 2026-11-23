@@ -6,6 +6,13 @@ import { resolveSource } from "@/lib/api/client";
 import { getAdminToken } from "@/lib/api/live-adapter";
 import type { AdminSettingsView } from "@/types";
 
+function liveApiBase(): string {
+  if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE_URL !== undefined) {
+    return String(process.env.NEXT_PUBLIC_API_BASE_URL).replace(/\/$/, "");
+  }
+  return "http://127.0.0.1:8000";
+}
+
 export function ProviderSettings({ settings }: { settings: AdminSettingsView }) {
   const isMock = resolveSource() === "mock" || settings.is_mock_ui;
   const [message, setMessage] = useState(settings.connection_message_fa);
@@ -24,10 +31,7 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
         return;
       }
       const token = getAdminToken();
-      const base = (process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000").replace(
-        /\/$/,
-        ""
-      );
+      const base = liveApiBase();
       if (keyDraft.trim()) {
         await fetch(`${base}/api/admin/providers/${firstProvider}`, {
           method: "PATCH",
