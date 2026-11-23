@@ -46,7 +46,7 @@ export const fa = {
   analysis: {
     title: "تحلیل صادراتی",
     tabs: {
-      timeline: "تایم‌لاین",
+      timeline: "مرکز فرمان",
       markets: "بازارها",
       buyers: "خریداران",
       feasibility: "امکان‌سنجی",
@@ -58,6 +58,38 @@ export const fa = {
     hsGuess: "HS پیشنهادی",
     reconnect: "تلاش مجدد",
     backHome: "بازگشت به خانه",
+  },
+
+  cockpit: {
+    researchLive: "تحقیق در جریان",
+    researchDone: "تحقیق کامل شد",
+    researchPartial: "نتیجه ناقص دریافت شد",
+    researchBlocked: "تحقیق متوقف شد",
+    researchQueued: "در صف اجرای تحقیق",
+    currentBeat: "مرحله جاری",
+    phaseRail: "مسیر تحقیق",
+    activityFeed: "جریان شواهد",
+    progressive: "نتایج تدریجی",
+    signalMap: "نقشه سیگنال بازار",
+    signalHint: "نمایش رابطهٔ اکتشاف — آمار واقعی نیست",
+    destinations: "مقاصد بعدی",
+    openDetails: "جزئیات مرحله",
+    hideDetails: "بستن",
+    connectionLost: "اتصال لحظه‌ای قطع شد",
+    connectionLostHint:
+      "پیش‌نمایش آزمایشی: ارتباط با جریان رویداد برقرار نیست. بدون رفرش دستی دوباره تلاش کنید.",
+    noResults: "هنوز نتیجه‌ای برای نمایش نیست",
+    noResultsHint: "با رسیدن رویدادهای بعدی، شواهد اینجا ظاهر می‌شوند.",
+    waitingPhase: "در انتظار",
+    activePhase: "در حال اجرا",
+    donePhase: "انجام‌شده",
+    errorPhase: "خطا",
+    partialPhase: "ناقص",
+    evidenceCount: "شواهد",
+    marketsReady: "بازار آماده‌شده",
+    simulateDisconnect: "شبیه‌سازی قطع اتصال",
+    clearDisconnect: "بازگشت به حالت عادی",
+    cockpitLabel: "میز فرمان هوشمند",
   },
 
   status: {
