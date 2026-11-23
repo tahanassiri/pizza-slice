@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # config.py lives at apps/api/app/core/config.py → parents[2] == apps/api (/app in Docker)
@@ -35,6 +36,9 @@ class Settings(BaseSettings):
     session_secret: str = "dev-session-secret-change-me"
     # Fernet key for encrypting provider API keys at rest (generate with Fernet.generate_key())
     secrets_fernet_key: str = ""
+    run_requests_per_hour: int = Field(default=40, ge=1)
+    buyer_requests_per_hour: int = Field(default=80, ge=1)
+    login_requests_per_minute: int = Field(default=12, ge=1)
 
     sse_heartbeat_seconds: float = 15.0
     orchestrator_step_delay_ms: int = 120

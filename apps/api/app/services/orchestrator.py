@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
-import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -15,8 +16,10 @@ from app.events.store import append_event
 from app.models.entities import Run
 from app.providers.registry import resolve_providers
 from app.schemas.contracts import Report, RunEventOut, Source
-from app.services.feasibility_calc import default_feasibility_template
 from app.trade_data.adapter import TradeDataProviderAdapter
+
+
+_pipeline_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="nova-pipeline")
 
 
 def _iso(dt: datetime) -> str:
@@ -135,10 +138,7 @@ async def run_pipeline(run_id: str) -> None:
         extra_sources: list[Source] = []
         # TradeDataService path — market modules never call Comtrade/WITS directly
         if isinstance(trade, TradeDataProviderAdapter):
-            trade_result = trade.trade_stats(
-                run.product, run.origin_country, hs_code=run.guessed_hs_code
-            )
-            market_result = trade.build_markets(
+            trade_result, market_result = trade.trade_stats_and_markets(
                 run.product, run.origin_country, hs_code=run.guessed_hs_code
             )
         else:
@@ -250,8 +250,6 @@ async def run_pipeline(run_id: str) -> None:
                 message_fa="اطلاعات ناکافی برای پیشنهاد بازار",
                 error_code=market_result.error_code or "INSUFFICIENT_EVIDENCE",
             )
-            feas = default_feasibility_template()
-            run.feasibility_json = feas.model_dump_json()
             report = Report(
                 run_id=run.id,
                 product=run.product,
@@ -264,7 +262,6 @@ async def run_pipeline(run_id: str) -> None:
                 markets=[],
                 selected_country=None,
                 buyers=[],
-                feasibility=feas,
                 risks_fa=[
                     "نبود داده تجاری کافی",
                     "Comtrade کلید اجباری نیست — در صورت نیاز فقط به‌صورت اختیاری فعال شود",
@@ -301,8 +298,6 @@ async def run_pipeline(run_id: str) -> None:
             status="completed",
             message_fa="رتبه‌بندی بازارها آماده شد (حداکثر ۳)",
         )
-        feas = default_feasibility_template()
-        run.feasibility_json = feas.model_dump_json()
         src_name = (market_result.meta or {}).get("source_name") or "TradeData"
         ref_year = (market_result.meta or {}).get("reference_year")
         report = Report(
@@ -316,7 +311,6 @@ async def run_pipeline(run_id: str) -> None:
             ),
             markets=markets,
             buyers=[],
-            feasibility=feas,
             risks_fa=[
                 "داده گروهی/کل ممکن است با تقاضای محصول‌محور HS هم‌خوان نباشد",
                 "خریدار بالقوه هنوز جست‌وجو/تأیید نشده",
@@ -345,19 +339,22 @@ async def run_pipeline(run_id: str) -> None:
             status="completed",
             message_fa="گزارش آماده است",
         )
+    except Exception:
+        logging.getLogger(__name__).exception("Pipeline failed for run %s", run_id)
+        db.rollback()
+        run = db.get(Run, run_id)
+        if run is not None:
+            await _emit(
+                db,
+                run,
+                phase=run.phase,
+                status="failed",
+                message_fa="تحلیل به دلیل یک خطای داخلی متوقف شد.",
+                error_code="PIPELINE_ERROR",
+            )
     finally:
         db.close()
 
 
 def schedule_pipeline(run_id: str) -> None:
-    """Fire-and-forget orchestration. Safe from sync FastAPI handlers (threadpool)."""
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(run_pipeline(run_id))
-    except RuntimeError:
-        threading.Thread(
-            target=lambda: asyncio.run(run_pipeline(run_id)),
-            name=f"nova-pipeline-{run_id}",
-            daemon=True,
-        ).start()
+    _pipeline_pool.submit(lambda: asyncio.run(run_pipeline(run_id)))

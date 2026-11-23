@@ -56,6 +56,7 @@ async function request<T>(
 
   const res = await fetch(`${apiBase()}${path}`, {
     ...init,
+    credentials: "include",
     headers,
   });
 
@@ -124,7 +125,7 @@ export const liveAdapter: NovaApiClientLike = {
   },
 
   async selectCountry(id: string, countryCode: string): Promise<RunSnapshot> {
-    return request<RunSnapshot>(`/api/runs/${encodeURIComponent(id)}/select-country`, {
+    return request<RunSnapshot>(`/api/runs/${encodeURIComponent(id)}/buyers`, {
       method: "POST",
       body: JSON.stringify({ country_code: countryCode }),
     });
@@ -135,10 +136,10 @@ export const liveAdapter: NovaApiClientLike = {
     return snap.buyers;
   },
 
-  async postFeasibility(id, costUpdates) {
+  async postFeasibility(id, costUpdates, assumptions) {
     return request<Feasibility>(`/api/runs/${encodeURIComponent(id)}/feasibility`, {
       method: "POST",
-      body: JSON.stringify({ cost_updates: costUpdates ?? null }),
+      body: JSON.stringify({ cost_updates: costUpdates ?? null, input_assumptions: assumptions }),
     });
   },
 

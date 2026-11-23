@@ -57,6 +57,20 @@ class RunEventRow(Base):
     run: Mapped[Run] = relationship(back_populates="events")
 
 
+class BuyerSearchRow(Base):
+    __tablename__ = "buyer_searches"
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), primary_key=True)
+    id: Mapped[str] = mapped_column(String(64), nullable=False)
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    buyers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sources_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message_fa: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class ProviderSetting(Base):
     __tablename__ = "provider_settings"
     __table_args__ = (UniqueConstraint("provider_id", name="uq_provider_id"),)

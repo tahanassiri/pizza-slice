@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, FiniteFloat, ValidationError, model_validator
+
+from app.core.errors import AppError
 
 RunStatus = Literal[
     "idle",
@@ -163,9 +165,9 @@ class Report(BaseModel):
 
 
 class CreateRunIn(BaseModel):
-    product: str
-    origin_country: str = "ایران"
-    hs_code: str | None = None
+    product: str = Field(max_length=512)
+    origin_country: str = Field(default="ایران", max_length=128)
+    hs_code: str | None = Field(default=None, max_length=32)
 
 
 class CreateRunOut(BaseModel):
@@ -178,12 +180,40 @@ class SelectCountryIn(BaseModel):
 
 class CostUpdate(BaseModel):
     id: str
-    amount: float | None = None
+    amount: FiniteFloat | None = Field(default=None, ge=0)
+    currency: Literal["USD", "IRR"] | None = None
+
+
+class FeasibilityAssumptions(BaseModel):
+    quantity: FiniteFloat | None = Field(default=None, ge=0)
+    target_sell_price_usd: FiniteFloat | None = Field(default=None, ge=0)
+    fx_rate_usd_irr: FiniteFloat | None = Field(default=None, gt=0)
+    unit: str | None = Field(default=None, min_length=1, max_length=40)
+    incoterm: str | None = Field(default=None, pattern=r"^[A-Za-z]{3}$")
 
 
 class FeasibilityIn(BaseModel):
     cost_updates: list[CostUpdate] | None = None
-    input_assumptions: dict[str, Any] | None = None
+    input_assumptions: FeasibilityAssumptions | None = None
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def validate_finance_input(cls, value, handler):
+        try:
+            return handler(value)
+        except ValidationError as exc:
+            # Validation errors may contain raw NaN/Infinity, which JSON cannot encode.
+            first_error = exc.errors(include_input=False)[0]
+            field = ".".join(map(str, first_error["loc"]))
+            raise AppError("INVALID_FEASIBILITY_INPUT", f"ورودی امکان‌سنجی نامعتبر است ({field}).", 422) from None
+
+
+class BuyerSearchState(BaseModel):
+    id: str
+    country_code: str
+    status: Literal["queued", "running", "completed", "partial", "failed"]
+    updated_at: str
+    error: RunError | None = None
 
 
 class RunSnapshot(BaseModel):
@@ -192,6 +222,7 @@ class RunSnapshot(BaseModel):
     events: list[RunEventOut] = Field(default_factory=list)
     markets: list[Market] = Field(default_factory=list)
     buyers: list[Buyer] = Field(default_factory=list)
+    buyer_search: BuyerSearchState | None = None
     feasibility: Feasibility | None = None
     report: Report | None = None
 
@@ -270,6 +301,7 @@ class TestConnectionIn(BaseModel):
 class TestConnectionOut(BaseModel):
     ok: bool
     message_fa: str
+    checked: bool = False
 
 
 class HealthOut(BaseModel):

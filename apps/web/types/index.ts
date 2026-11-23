@@ -106,11 +106,21 @@ export interface ScenarioResult {
   notes_fa: string[];
 }
 
+export interface FeasibilityAssumptions {
+  quantity?: number | null;
+  target_sell_price_usd?: number | null;
+  fx_rate_usd_irr?: number | null;
+  unit?: string | null;
+  incoterm?: string | null;
+}
+
+export type CostUpdateInput = Pick<CostItem, "id" | "amount"> & { currency?: string };
+
 export interface Feasibility {
-  input_assumptions: Record<string, string | number | null>;
+  input_assumptions: FeasibilityAssumptions;
   cost_items: CostItem[];
   currency: string;
-  incoterm?: string;
+  incoterm?: string | null;
   scenario_results: ScenarioResult[];
   missing_inputs: string[];
   caveats: string[];
@@ -186,6 +196,13 @@ export interface RunSnapshot {
   events: RunEvent[];
   markets: Market[];
   buyers: Buyer[];
+  buyer_search?: {
+    id: string;
+    country_code: string;
+    status: "queued" | "running" | "completed" | "partial" | "failed";
+    updated_at: string;
+    error?: RunError;
+  } | null;
   feasibility?: Feasibility;
   report?: Report;
 }

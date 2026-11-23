@@ -3,46 +3,55 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import defaultdict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from threading import Lock
 from typing import Any
 
 
 class EventBroadcaster:
     def __init__(self) -> None:
-        self._subs: dict[str, set[asyncio.Queue[dict[str, Any] | None]]] = defaultdict(set)
-        self._lock = asyncio.Lock()
+        self._subs: dict[str, dict[asyncio.Queue[dict[str, Any] | None], asyncio.AbstractEventLoop]] = (
+            defaultdict(dict)
+        )
+        self._lock = Lock()
 
     async def subscribe(self, run_id: str) -> asyncio.Queue[dict[str, Any] | None]:
-        q: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=256)
-        async with self._lock:
-            self._subs[run_id].add(q)
+        q: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=1)
+        with self._lock:
+            self._subs[run_id][q] = asyncio.get_running_loop()
         return q
 
     async def unsubscribe(self, run_id: str, q: asyncio.Queue[dict[str, Any] | None]) -> None:
-        async with self._lock:
-            self._subs[run_id].discard(q)
+        with self._lock:
+            self._subs[run_id].pop(q, None)
             if not self._subs[run_id]:
                 self._subs.pop(run_id, None)
 
     async def publish(self, run_id: str, event: dict[str, Any]) -> None:
-        async with self._lock:
-            targets = list(self._subs.get(run_id, set()))
-        for q in targets:
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                # Drop oldest-style: skip if subscriber is too slow
-                pass
+        self._notify(run_id, event)
 
     async def close_run(self, run_id: str) -> None:
-        async with self._lock:
-            targets = list(self._subs.get(run_id, set()))
-        for q in targets:
+        self._notify(run_id, None)
+
+    def _notify(self, run_id: str, event: dict[str, Any] | None) -> None:
+        with self._lock:
+            targets = list(self._subs.get(run_id, {}).items())
+        for queue, loop in targets:
             try:
-                q.put_nowait(None)
-            except asyncio.QueueFull:
+                loop.call_soon_threadsafe(self._enqueue, queue, event)
+            except RuntimeError:
+                # The subscriber's loop can close concurrently with notification.
                 pass
+
+    @staticmethod
+    def _enqueue(queue: asyncio.Queue, event: dict[str, Any] | None) -> None:
+        # A single wakeup is enough to reconcile every committed event.
+        if event is None and queue.full():
+            queue.get_nowait()
+        if not queue.full():
+            queue.put_nowait(event)
 
 
 broadcaster = EventBroadcaster()
@@ -51,22 +60,22 @@ broadcaster = EventBroadcaster()
 async def sse_event_stream(
     *,
     run_id: str,
-    initial_events: list[dict[str, Any]],
+    load_events: Callable[[str | None], Awaitable[list[dict[str, Any]]]],
+    after_event_id: str | None,
     heartbeat_seconds: float,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Yields dicts with keys: event (str), data (str), id (optional)."""
-    import json
-
-    for ev in initial_events:
-        yield {
-            "event": "run_event",
-            "id": ev.get("event_id"),
-            "data": json.dumps(ev, ensure_ascii=False),
-        }
-
+    """Use live notifications to wake readers and the database to order events."""
     q = await broadcaster.subscribe(run_id)
     try:
         while True:
+            for event in await load_events(after_event_id):
+                after_event_id = event["event_id"]
+                yield {
+                    "event": "run_event",
+                    "id": after_event_id,
+                    "data": json.dumps(event, ensure_ascii=False),
+                }
+
             try:
                 item = await asyncio.wait_for(q.get(), timeout=heartbeat_seconds)
             except TimeoutError:
@@ -77,10 +86,5 @@ async def sse_event_stream(
                 continue
             if item is None:
                 break
-            yield {
-                "event": "run_event",
-                "id": item.get("event_id"),
-                "data": json.dumps(item, ensure_ascii=False),
-            }
     finally:
         await broadcaster.unsubscribe(run_id, q)

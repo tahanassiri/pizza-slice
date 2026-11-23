@@ -4,9 +4,12 @@ services:
   api:
     build:
       context: ./apps/api
+      labels:
+        org.opencontainers.image.revision: ${NOVA_REVISION:-unknown}
     env_file:
       - .env
     environment:
+      ENVIRONMENT: production
       DATABASE_URL: sqlite:////app/data/nova.db
       PROVIDER_MODE: auto
       ORCHESTRATOR_STEP_DELAY_MS: "80"
@@ -31,6 +34,8 @@ services:
   web:
     build:
       context: ./apps/web
+      labels:
+        org.opencontainers.image.revision: ${NOVA_REVISION:-unknown}
       args:
         NEXT_PUBLIC_DATA_SOURCE: live
         # Same-origin via Caddy — browser calls /api/* on this host

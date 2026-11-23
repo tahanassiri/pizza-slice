@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.security import encrypt_secret, mask_secret
+from app.core.security import encrypt_secret
 from app.models.entities import AppMeta, ProviderSetting
 from app.providers.llm_catalog import all_models, catalog_grouped, models_by_id
 from app.schemas.contracts import (
@@ -193,7 +193,7 @@ def settings_view(db: Session) -> AdminSettingsOut:
             enabled=bool(r.enabled),
             model=r.model,
             has_key_configured=bool(r.encrypted_api_key),
-            status=r.status,
+            status="untested" if r.status == "ok" and r.provider_id != "comtrade" else r.status,
             usage_note_fa=r.usage_note_fa,
             daily_limit=r.daily_limit,
             used_today=r.used_today,
@@ -252,7 +252,7 @@ def update_provider(db: Session, provider_id: str, body: ProviderUpdateIn) -> Pr
         enabled=bool(row.enabled),
         model=row.model,
         has_key_configured=bool(row.encrypted_api_key),
-        status=row.status,
+        status="untested" if row.status == "ok" and provider_id != "comtrade" else row.status,
         usage_note_fa=row.usage_note_fa,
         daily_limit=row.daily_limit,
         used_today=row.used_today,
@@ -309,8 +309,8 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
                 message_fa="کلید این نسخه مدل پیکربندی نشده است.",
             )
         return TestConnectionOut(
-            ok=True,
-            message_fa=f"کلید نسخه «{model_id}» سمت سرور موجود است (بدون تماس پولی در آزمون).",
+            ok=False,
+            message_fa=f"کلید نسخه «{model_id}» ذخیره شده است. اتصال و اعتبار کلید بررسی نشد.",
         )
 
     row = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == provider_id))
@@ -339,8 +339,9 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
                 db.commit()
                 return TestConnectionOut(
                     ok=True,
+                    checked=True,
                     message_fa=(
-                        "پیش‌نمایش عمومی Comtrade در دسترس است. "
+                        "پیش‌نمایش عمومی Comtrade پاسخ HTTP 200 داد. "
                         + (
                             "فعال است."
                             if row.enabled
@@ -352,6 +353,7 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
             db.commit()
             return TestConnectionOut(
                 ok=False,
+                checked=True,
                 message_fa=f"پیش‌نمایش Comtrade پاسخ نداد ({r.status_code}).",
             )
         except Exception as exc:
@@ -359,6 +361,7 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
             db.commit()
             return TestConnectionOut(
                 ok=False,
+                checked=True,
                 message_fa=f"آزمون Comtrade ناموفق ({type(exc).__name__}).",
             )
 
@@ -369,12 +372,11 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
             ok=False,
             message_fa="کلید پیکربندی نشده است.",
         )
-    row.status = "ok"
+    row.status = "untested"
     db.commit()
-    _ = mask_secret("configured")
     return TestConnectionOut(
-        ok=True,
-        message_fa="کلید سمت سرور موجود است؛ آزمون زنده اختیاری است (بدون هزینه خودکار).",
+        ok=False,
+        message_fa="کلید سمت سرور ذخیره شده است. اتصال و اعتبار کلید بررسی نشد.",
     )
 
 

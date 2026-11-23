@@ -166,8 +166,8 @@ class WitsTradeProvider:
 
     def _fetch_one(
         self, reporter: str, year: int, product: str, indicator: str
-    ) -> tuple[str, float | None, str, bool]:
-        """Return (iso3, value, url, from_cache). Empty country rows are not breaker failures."""
+    ) -> tuple[str, float | None, str, str, bool]:
+        """Return (iso3, value, url, fetched_at, from_cache)."""
         url = (
             f"{WITS_BASE}/reporter/{reporter}/year/{year}/partner/WLD"
             f"/product/{product}/indicator/{indicator}?format=JSON"
@@ -178,28 +178,30 @@ class WitsTradeProvider:
         )
         cached = self.cache.get(cache_key)
         if cached is not None:
-            return reporter, cached[0], url, True
+            value, fetched_at = cached
+            return reporter, value, url, fetched_at, True
 
         try:
             with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
                 r = client.get(url)
         except Exception:
             trade_breaker.record_failure(self.id)
-            return reporter, None, url, False
+            return reporter, None, url, "", False
 
         if r.status_code >= 500:
             trade_breaker.record_failure(self.id)
-            return reporter, None, url, False
+            return reporter, None, url, "", False
 
+        fetched_at = _now()
         if r.status_code != 200:
             # Missing reporter/year/product is common — cache miss, don't trip breaker
-            self.cache.set(cache_key, (None, url))
-            return reporter, None, url, False
+            self.cache.set(cache_key, (None, fetched_at))
+            return reporter, None, url, fetched_at, False
 
         value = _parse_observation(r.json())
         trade_breaker.record_success(self.id)
-        self.cache.set(cache_key, (value, url))
-        return reporter, value, url, False
+        self.cache.set(cache_key, (value, fetched_at))
+        return reporter, value, url, fetched_at, False
 
     def fetch(self, query: TradeDataQuery) -> TradeDataResult:
         if not self.is_available():
@@ -224,7 +226,8 @@ class WitsTradeProvider:
         records: list[TradeRecord] = []
         sources: list[dict] = []
         warnings: list[str] = [
-            "WITS TradeStats از گروه‌های محصولی/کل استفاده می‌کند؛ این عدد تجارت دوجانبه HS6 نیست.",
+            "ارقام WITS مربوط به تجارت گروه محصولی یا کل کالاهای گزارش‌دهنده با جهان (WLD) است.",
+            "رتبه‌بندی به گزارش‌دهندگان بررسی‌شده محدود است و مبدأ درخواستی را فیلتر نمی‌کند.",
         ]
         cache_hit = False
         errors = 0
@@ -242,19 +245,19 @@ class WitsTradeProvider:
                     for iso3 in reporters
                 ]
                 for fut in as_completed(futures):
-                    iso3, value, url, from_cache = fut.result()
-                    if from_cache:
-                        year_cache = True
+                    iso3, value, url, fetched_at, from_cache = fut.result()
                     if value is None:
                         year_errors += 1
                         continue
+                    if from_cache:
+                        year_cache = True
                     year_records.append(
                         TradeRecord(
                             reporter_iso3=iso3,
                             partner_iso3="WLD",
                             year=year,
                             flow=query.flow,
-                            value=value,
+                            value=value * 1000,  # WITS reports trade values in thousands of USD.
                             unit="USD",
                             currency="USD",
                             product_code=product,
@@ -262,7 +265,7 @@ class WitsTradeProvider:
                             hs_code=query.hs_code,
                             hs_revision=query.hs_revision,
                             estimated=False,
-                            note="WITS MPRT/XPRT-TRD-VL as reported by API",
+                            note="WITS MPRT/XPRT-TRD-VL converted from thousands of USD to USD",
                         )
                     )
                     year_sources.append(
@@ -270,8 +273,9 @@ class WitsTradeProvider:
                             "url": url,
                             "title": f"WITS {indicator} — {iso3} {year} {product}",
                             "publisher": "World Bank WITS",
-                            "published_at": str(year),
-                            "fetched_at": _now(),
+                            "reporter_iso3": iso3,
+                            "reference_year": year,
+                            "fetched_at": fetched_at,
                             "provider": self.id,
                             "reliability_note": product_label,
                         }
@@ -310,25 +314,18 @@ class WitsTradeProvider:
 
         year = year_used or years[0]
 
-        quality: str = "verified" if product != "Total" and len(records) >= 3 else "partial"
-        if product == "Total":
-            warnings.append(
-                "رتبه‌بندی بر واردات کل (Total) است — نه تقاضای محصول‌محور HS."
-            )
-            quality = "partial"
-
         return TradeDataResult(
             records=records,
             source_name=self.display_name,
             source_url=WITS_DOCS,
-            retrieved_at=_now(),
+            retrieved_at=max(source["fetched_at"] for source in sources),
             reference_year=year,
             hs_code=query.hs_code,
             hs_revision=query.hs_revision,
             unit="USD",
             currency="USD",
-            coverage=f"{len(records)} reporters · product={product} · partner=WLD",
-            quality_status=quality,  # type: ignore[arg-type]
+            coverage=f"{len(records)}/{len(reporters)} reporters · product={product} · partner=WLD",
+            quality_status="partial",
             warnings=warnings,
             sources=sources,
             provider_id=self.id,

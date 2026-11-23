@@ -153,6 +153,9 @@ def test_feasibility_full_calc_deterministic(client):
                 {"id": "packaging", "amount": 0.5},
                 {"id": "intl_freight", "amount": 1.5},
                 {"id": "duty", "amount": 0.5},
+                {"id": "inland", "amount": 0},
+                {"id": "insurance", "amount": 0},
+                {"id": "fees", "amount": 0},
             ],
         },
     )

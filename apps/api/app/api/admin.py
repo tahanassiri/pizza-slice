@@ -3,7 +3,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.errors import AppError
+from app.core.request_budget import enforce_request_budget
 from app.core.security import (
     create_admin_session,
     require_admin,
@@ -29,6 +31,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 @router.post("/login", response_model=AdminLoginOut)
 def login(body: AdminLoginIn):
+    enforce_request_budget("admin-login", get_settings().login_requests_per_minute, 60)
     if not verify_admin_password(body.username, body.password):
         raise AppError("AUTH_FAILED", "نام کاربری یا رمز نادرست است.", 401)
     token = create_admin_session()

@@ -12,17 +12,15 @@ const accent: Record<ScenarioResult["id"], string> = {
   optimistic: "border-[#027a48]/40",
 };
 
-export function ScenarioComparison({ scenarios }: { scenarios: ScenarioResult[] }) {
+export function ScenarioComparison({ scenarios, currency }: { scenarios: ScenarioResult[]; currency: string }) {
   return (
     <div>
       <div className="mb-3 flex items-end justify-between gap-2">
         <div>
-          <p className="text-[0.65rem] uppercase tracking-[0.14em] text-[#0cb6aa]">
-            scenarios
-          </p>
-          <h3 className="font-semibold text-[var(--study-ink)]">{fa.feasibility.scenarios}</h3>
+          <h3 className="font-semibold text-[var(--study-ink)]">
+            {fa.feasibility.scenarios} <span dir="ltr">({currency})</span>
+          </h3>
         </div>
-        <p className="text-xs text-[#9a6700]">{fa.feasibility.sampleNote}</p>
       </div>
 
       <div className="grid gap-3 md:grid-cols-3">

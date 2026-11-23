@@ -40,8 +40,10 @@ export function ProductInput() {
         ...(isMock ? { fixture_id: fixture } : {}),
       });
       router.push(`/analysis/${run_id}`);
-    } catch {
-      setError(fa.error.generic);
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message === "RATE_LIMITED"
+        ? fa.error.requestLimit
+        : fa.error.generic);
       setBusy(false);
     }
   }

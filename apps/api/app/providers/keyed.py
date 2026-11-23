@@ -235,13 +235,14 @@ class KeyedGeminiLLM:
             return hs_hint.strip(), "medium"
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.model}:generateContent?key={self.api_key}"
+            f"{self.model}:generateContent"
         )
         prompt = _HS_PROMPT.format(product=product)
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 r = client.post(
                     url,
+                    headers={"x-goog-api-key": self.api_key},
                     json={"contents": [{"parts": [{"text": prompt}]}]},
                 )
             if r.status_code == 429 or r.status_code != 200:

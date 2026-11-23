@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { resolveSource } from "@/lib/api/client";
 import { fa } from "@/lib/i18n/fa";
 
 const DEFAULT_STAGES = [
@@ -12,7 +13,7 @@ const DEFAULT_STAGES = [
 
 export function LoadingState({
   label = fa.loading.pleaseWait,
-  hint = fa.loading.hint,
+  hint,
   stages = DEFAULT_STAGES,
   pulse = true,
 }: {
@@ -24,15 +25,17 @@ export function LoadingState({
 }) {
   const [idx, setIdx] = useState(0);
   const [tick, setTick] = useState(0);
+  const simulated = resolveSource() === "mock";
+  const detail = hint ?? (simulated ? fa.loading.hint : undefined);
 
   useEffect(() => {
-    if (!pulse || stages.length <= 1) return;
+    if (!simulated || !pulse || stages.length <= 1) return;
     const id = window.setInterval(() => {
       setIdx((i) => (i + 1) % stages.length);
       setTick((t) => t + 1);
     }, 2200);
     return () => window.clearInterval(id);
-  }, [pulse, stages]);
+  }, [pulse, simulated, stages]);
 
   const stage = stages[idx] ?? label;
   const progress = stages.length
@@ -62,19 +65,19 @@ export function LoadingState({
         </span>
         <div className="min-w-0 flex-1 space-y-2">
           <p className="text-sm font-semibold text-white">{label}</p>
-          <p
+          {simulated ? <p
             key={`${idx}-${tick}`}
             className="animate-fade-up text-xs font-medium text-[var(--accent)]"
           >
             {stage}
-          </p>
-          {hint ? (
-            <p className="text-xs leading-5 text-[var(--ink-muted)]">{hint}</p>
+          </p> : null}
+          {detail ? (
+            <p className="text-xs leading-5 text-[var(--ink-muted)]">{detail}</p>
           ) : null}
         </div>
       </div>
 
-      <div className="relative space-y-2" aria-hidden>
+      {simulated ? <div className="relative space-y-2" aria-hidden>
         <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
           <div
             className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-700 ease-out"
@@ -91,7 +94,7 @@ export function LoadingState({
             />
           ))}
         </div>
-      </div>
+      </div> : null}
     </div>
   );
 }

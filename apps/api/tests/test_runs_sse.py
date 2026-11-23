@@ -1,48 +1,91 @@
 from __future__ import annotations
 
-import threading
+import asyncio
 import time
+
+import pytest
 
 from app.db.session import SessionLocal
 from app.events.store import list_events
+from app.services import orchestrator, runs
+
+
+@pytest.mark.asyncio
+async def test_unexpected_pipeline_exception_is_persisted(client, monkeypatch):
+    monkeypatch.setattr(runs, "schedule_pipeline", lambda _run_id: None)
+    run_id = client.post(
+        "/api/runs", json={"product": "پسته", "origin_country": "ایران"}
+    ).json()["run_id"]
+
+    def fail(_db):
+        raise ValueError("private provider response")
+
+    monkeypatch.setattr(orchestrator, "resolve_providers", fail)
+    await orchestrator.run_pipeline(run_id)
+
+    snapshot = client.get(f"/api/runs/{run_id}").json()
+    assert snapshot["run"]["status"] == "failed"
+    assert snapshot["run"]["error"]["code"] == "PIPELINE_ERROR"
+    terminal = snapshot["events"][-1]
+    assert terminal["status"] == "failed"
+    assert terminal["error_code"] == "PIPELINE_ERROR"
+    assert "private provider response" not in terminal["message_fa"]
 
 
 def _wait_pipeline(client, run_id: str, timeout: float = 8.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         snap = client.get(f"/api/runs/{run_id}").json()
-        status = snap["run"]["status"]
-        phase = snap["run"]["phase"]
-        if phase == "report" or status in {"partial", "completed", "failed"}:
-            if snap.get("report") is not None or status == "failed":
-                return snap
-            if phase == "report" and len(snap["events"]) >= 5:
+        if snap["events"]:
+            last = snap["events"][-1]
+            if last["status"] == "failed" or (
+                last["phase"] == "report"
+                and last["status"] in {"partial", "completed"}
+                and snap.get("report") is not None
+            ):
                 return snap
         time.sleep(0.05)
     return client.get(f"/api/runs/{run_id}").json()
 
 
 def _read_sse_until(client, path: str, *, headers=None, params=None, predicate, timeout=5.0):
-    """Read SSE stream in a thread until predicate(buf) or timeout."""
-    buf_holder: list[str] = [""]
-    error_holder: list[BaseException] = []
+    """Read ASGI body chunks directly because TestClient buffers open streams."""
+    request = client.build_request("GET", path, headers=headers, params=params)
 
-    def _worker():
-        try:
-            with client.stream("GET", path, headers=headers, params=params) as stream:
-                for chunk in stream.iter_bytes():
-                    buf_holder[0] += chunk.decode("utf-8", errors="ignore")
-                    if predicate(buf_holder[0]):
-                        break
-        except BaseException as exc:  # noqa: BLE001
-            error_holder.append(exc)
+    async def read():
+        disconnect = asyncio.Event()
+        buf = ""
+        request_sent = False
 
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    t.join(timeout=timeout)
-    assert not error_holder, error_holder[0]
-    assert predicate(buf_holder[0]), f"SSE predicate not met. buf={buf_holder[0][:500]!r}"
-    return buf_holder[0]
+        async def receive():
+            nonlocal request_sent
+            if not request_sent:
+                request_sent = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            await disconnect.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            nonlocal buf
+            if message["type"] == "http.response.start":
+                assert message["status"] == 200
+            if message["type"] == "http.response.body":
+                buf += message.get("body", b"").decode("utf-8")
+                if predicate(buf):
+                    disconnect.set()
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": request.url.path,
+            "query_string": request.url.query,
+            "headers": [(name.lower(), value) for name, value in request.headers.raw],
+        }
+        await asyncio.wait_for(client.app(scope, receive, send), timeout=timeout)
+        assert predicate(buf), f"SSE predicate not met. buf={buf[:500]!r}"
+        return buf
+
+    return asyncio.run(read())
 
 
 def test_create_run_and_snapshot(client):
@@ -118,7 +161,7 @@ def test_sse_http_endpoint_content_and_heartbeat(client):
     assert "event: run_event" in buf
     assert "event: heartbeat" in buf
     # Resume should not re-send the cursor event itself
-    assert f'"event_id": "{first_id}"' not in buf.replace(" ", "")
+    assert f"id: {first_id}\r\n" not in buf
 
 
 def test_sse_header_resume_no_history_replay(client):
@@ -133,11 +176,13 @@ def test_sse_header_resume_no_history_replay(client):
         client,
         f"/api/runs/{run_id}/events",
         headers={"Last-Event-ID": last},
+        params={"last_event_id": snap["events"][0]["event_id"]},
         predicate=lambda b: "event: heartbeat" in b,
         timeout=6.0,
     )
     assert "event: heartbeat" in buf
-    assert "event: run_event" not in buf
+    for event in snap["events"]:
+        assert f"id: {event['event_id']}\r\n" not in buf
 
 
 def test_feasibility_deterministic(client):

@@ -9,6 +9,7 @@ from app.core.errors import register_exception_handlers
 from app.db.session import SessionLocal, init_db
 from app.schemas.contracts import HealthOut
 from app.services.admin_service import ensure_providers
+from app.services.runs import mark_interrupted_runs
 
 
 @asynccontextmanager
@@ -17,6 +18,7 @@ async def lifespan(_app: FastAPI):
     db = SessionLocal()
     try:
         ensure_providers(db)
+        mark_interrupted_runs(db)
     finally:
         db.close()
     yield

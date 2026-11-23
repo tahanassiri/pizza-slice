@@ -55,21 +55,22 @@ function requireSnap(id: string): RunSnapshot {
 }
 
 function recomputeScenarios(feasibility: Feasibility): Feasibility {
-  const qty = Number(feasibility.input_assumptions.quantity ?? 0) || 0;
-  const sell = Number(feasibility.input_assumptions.target_sell_price_usd ?? 0) || 0;
-  const unitCost = feasibility.cost_items.reduce((sum, c) => sum + (c.amount ?? 0), 0);
+  const { quantity: qty, target_sell_price_usd: sell, fx_rate_usd_irr: fx } = feasibility.input_assumptions;
   const missing = feasibility.cost_items
-    .filter((c) => c.required && (c.amount === null || Number.isNaN(c.amount)))
+    .filter((c) => c.amount === null)
     .map((c) => c.label_fa);
+  if (fx == null && feasibility.cost_items.some((c) => c.currency === "IRR" && c.amount)) {
+    missing.push("نرخ تبدیل ریال به دلار");
+  }
 
-  if (!qty || !sell || missing.length) {
+  if (qty == null || sell == null || missing.length) {
     return {
       ...feasibility,
       missing_inputs: [
         ...new Set([
           ...missing,
-          ...(!qty ? ["تعداد/وزن"] : []),
-          ...(!sell ? ["قیمت فروش هدف"] : []),
+          ...(qty == null ? ["تعداد/وزن"] : []),
+          ...(sell == null ? ["قیمت فروش هدف"] : []),
         ]),
       ],
       scenario_results: feasibility.scenario_results.map((s) => ({
@@ -83,6 +84,10 @@ function recomputeScenarios(feasibility: Feasibility): Feasibility {
     };
   }
 
+  const unitCost = feasibility.cost_items.reduce((sum, c) => {
+    const amount = c.amount ?? 0;
+    return sum + (c.currency === "IRR" && fx ? amount / fx : amount);
+  }, 0);
   const factors = { conservative: 0.88, base: 1, optimistic: 1.12 } as const;
   const costFactors = { conservative: 1.05, base: 1, optimistic: 0.95 } as const;
 
@@ -93,7 +98,10 @@ function recomputeScenarios(feasibility: Feasibility): Feasibility {
       const revenue = Math.round(qty * sell * factors[s.id]);
       const total_cost = Math.round(qty * unitCost * costFactors[s.id]);
       const margin = revenue - total_cost;
-      const margin_pct = Math.round((margin / revenue) * 1000) / 10;
+      const margin_pct = revenue ? Math.round((margin / revenue) * 1000) / 10 : null;
+      if (![revenue, total_cost, margin, margin_pct ?? 0].every(Number.isFinite)) {
+        throw new Error("INVALID_FEASIBILITY_INPUT");
+      }
       return {
         ...s,
         revenue,
@@ -161,22 +169,24 @@ export const mockAdapter: NovaApiClientLike = {
     return structuredClone(requireSnap(id).buyers);
   },
 
-  async postFeasibility(
-    id: string,
-    costUpdates?: { id: string; amount: number | null }[]
-  ): Promise<Feasibility> {
+  async postFeasibility(id, costUpdates, assumptions) {
     await delay();
     const snap = requireSnap(id);
     if (!snap.feasibility) {
       throw new Error("FEASIBILITY_UNAVAILABLE");
     }
     let next = structuredClone(snap.feasibility);
-    if (costUpdates?.length) {
-      next.cost_items = next.cost_items.map((c) => {
-        const u = costUpdates.find((x) => x.id === c.id);
-        return u ? { ...c, amount: u.amount } : c;
-      });
-    }
+    next.input_assumptions = { ...next.input_assumptions, ...assumptions };
+    next.incoterm = next.input_assumptions.incoterm;
+    next.cost_items = next.cost_items.map((c) => {
+      const update = costUpdates?.find((x) => x.id === c.id);
+      return {
+        ...c,
+        ...update,
+        unit: next.input_assumptions.unit ?? c.unit,
+        note_fa: update?.amount == null ? c.note_fa : undefined,
+      };
+    });
     next = recomputeScenarios(next);
     snap.feasibility = next;
     if (snap.report) snap.report.feasibility = next;

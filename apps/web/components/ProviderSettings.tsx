@@ -19,6 +19,7 @@ function liveApiBase(): string {
 export function ProviderSettings({ settings }: { settings: AdminSettingsView }) {
   const isMock = resolveSource() === "mock" || settings.is_mock_ui;
   const [message, setMessage] = useState(settings.connection_message_fa);
+  const [modelCheckMessage, setModelCheckMessage] = useState("");
   const [keyDraft, setKeyDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [selectedModel, setSelectedModel] = useState(settings.selected_model);
@@ -71,6 +72,7 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
   async function selectModel(modelId: string) {
     setSelectedModel(modelId);
     setKeyDraft("");
+    setModelCheckMessage("");
     if (isMock) {
       setMessage(`مدل نمایشی انتخاب شد: ${modelId}`);
       return;
@@ -93,6 +95,7 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
   }
 
   async function saveModelKey() {
+    setModelCheckMessage("");
     setBusy(true);
     try {
       if (isMock) {
@@ -140,7 +143,7 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
     setBusy(true);
     try {
       if (isMock) {
-        setMessage("آزمون اتصال نمایشی — بدون درخواست واقعی.");
+        setModelCheckMessage("بررسی نمایشی کلید مدل");
         return;
       }
       const base = liveApiBase();
@@ -149,10 +152,11 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
         headers: await authHeaders(),
         body: JSON.stringify({ provider_id: `model:${selectedModel}` }),
       });
+      if (!res.ok) throw new Error("fail");
       const body = (await res.json()) as { message_fa?: string };
-      setMessage(body.message_fa || "نتیجه آزمون دریافت شد.");
+      setModelCheckMessage(body.message_fa || "نتیجه بررسی کلید مشخص نشد.");
     } catch {
-      setMessage(fa.error.generic);
+      setModelCheckMessage(fa.error.generic);
     } finally {
       setBusy(false);
     }
@@ -267,8 +271,9 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
         headers: await authHeaders(),
         body: JSON.stringify({ provider_id: providerId }),
       });
+      if (!res.ok) throw new Error("fail");
       const body = (await res.json()) as { message_fa?: string };
-      setMessage(body.message_fa || "نتیجه آزمون دریافت شد.");
+      setMessage(body.message_fa || "نتیجه بررسی مشخص نشد.");
     } catch {
       setMessage(fa.error.generic);
     } finally {
@@ -414,13 +419,13 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
                   disabled={busy}
                   onClick={() => void testProvider(p.id)}
                 >
-                  {fa.admin.testProvider}
+                  {p.id === "comtrade" ? "آزمون پیش‌نمایش عمومی" : "بررسی وجود کلید"}
                 </button>
               </div>
             </li>
           ))}
         </ul>
-        <p className="break-words text-sm text-[var(--ink-muted)]">{message}</p>
+        <p role="status" className="break-words text-sm text-[var(--ink-muted)]">{message}</p>
       </section>
 
       <section className="nova-panel min-w-0 space-y-3 overflow-hidden p-4 sm:p-5">
@@ -509,9 +514,12 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
               disabled={busy}
               onClick={() => void testConnection()}
             >
-              {fa.admin.testConnection}
+              بررسی وجود کلید مدل
             </button>
           </div>
+          <p role="status" className="break-words text-sm text-[var(--ink-muted)]">
+            {modelCheckMessage}
+          </p>
         </div>
       </section>
 

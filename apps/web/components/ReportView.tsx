@@ -140,7 +140,14 @@ export function ReportView({ report }: { report: Report }) {
             <h2 className="mb-2 text-sm font-semibold uppercase tracking-[0.08em] text-[#0cb6aa]">
               {fa.feasibility.title}
             </h2>
-            <p className="mb-2 text-xs text-[#9a6700]">{fa.feasibility.sampleNote}</p>
+            {report.feasibility.is_mock_sample ? (
+              <p className="mb-2 text-xs text-[#9a6700]">{fa.feasibility.sampleNote}</p>
+            ) : null}
+            {report.feasibility.incoterm ? (
+              <p className="mb-2 text-sm text-[var(--study-muted)]">
+                {fa.feasibility.incoterm} <span dir="ltr">{report.feasibility.incoterm}</span>
+              </p>
+            ) : null}
             <ul className="space-y-1 text-sm text-[var(--study-muted)]">
               {report.feasibility.scenario_results.map((s) => (
                 <li key={s.id}>
@@ -151,6 +158,11 @@ export function ReportView({ report }: { report: Report }) {
                 </li>
               ))}
             </ul>
+            {report.feasibility.missing_inputs.length ? (
+              <p className="mt-2 text-xs text-[#9a6700]">
+                {fa.feasibility.missing} ({report.feasibility.missing_inputs.join("، ")})
+              </p>
+            ) : null}
           </section>
         ) : null}
 

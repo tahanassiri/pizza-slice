@@ -6,7 +6,7 @@ from app.providers.base import ProviderResult
 from app.schemas.contracts import Source
 from app.trade_data.service import TradeDataService
 from app.trade_data.to_markets import trade_result_to_markets
-from app.trade_data.types import TradeDataQuery
+from app.trade_data.types import TradeDataQuery, TradeDataResult
 
 
 class TradeDataProviderAdapter:
@@ -18,7 +18,7 @@ class TradeDataProviderAdapter:
         self.service = service
         self._last: ProviderResult | None = None
 
-    def trade_stats(self, product: str, origin: str, hs_code: str | None = None) -> ProviderResult:
+    def _fetch(self, product: str, origin: str, hs_code: str | None) -> TradeDataResult:
         query = TradeDataQuery(
             hs_code=hs_code,
             hs_revision="HS" if hs_code else None,
@@ -26,7 +26,13 @@ class TradeDataProviderAdapter:
             product_hint=product,
             origin=origin,
         )
-        result = self.service.fetch(query)
+        return self.service.fetch(query)
+
+    def trade_stats(self, product: str, origin: str, hs_code: str | None = None) -> ProviderResult:
+        return self._stats_result(self._fetch(product, origin, hs_code))
+
+    @staticmethod
+    def _stats_result(result: TradeDataResult) -> ProviderResult:
         sources = []
         for s in result.sources or []:
             try:
@@ -69,14 +75,15 @@ class TradeDataProviderAdapter:
     def build_markets(
         self, product: str, origin: str, hs_code: str | None = None
     ) -> ProviderResult:
-        query = TradeDataQuery(
-            hs_code=hs_code,
-            hs_revision="HS" if hs_code else None,
-            flow="import",
-            product_hint=product,
-            origin=origin,
-        )
-        result = self.service.fetch(query)
+        return self._markets_result(self._fetch(product, origin, hs_code), product, origin)
+
+    def trade_stats_and_markets(
+        self, product: str, origin: str, hs_code: str | None = None
+    ) -> tuple[ProviderResult, ProviderResult]:
+        result = self._fetch(product, origin, hs_code)
+        return self._stats_result(result), self._markets_result(result, product, origin)
+
+    def _markets_result(self, result: TradeDataResult, product: str, origin: str) -> ProviderResult:
         out = trade_result_to_markets(result, product=product, origin=origin)
         self._last = out
         return out

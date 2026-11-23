@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { fa } from "@/lib/i18n/fa";
 import { getApiClient, resolveSource } from "@/lib/api/client";
 import { useRunEvents } from "@/lib/api/use-run-events";
-import type { AnalysisTab, Feasibility, RunEvent, RunSnapshot } from "@/types";
+import type { AnalysisTab, Feasibility, RunSnapshot } from "@/types";
 import { BuyerCard } from "@/components/BuyerCard";
 import { CostEditor } from "@/components/CostEditor";
 import { EmptyState } from "@/components/EmptyState";
@@ -29,15 +29,19 @@ function isTab(v: string | null): v is AnalysisTab {
   return !!v && (TABS as string[]).includes(v);
 }
 
-export function AnalysisShell({
-  runId,
-  initialTab,
-}: {
+type AnalysisShellProps = {
   runId: string;
   initialTab?: AnalysisTab;
-}) {
+};
+
+export function AnalysisShell(props: AnalysisShellProps) {
+  return <AnalysisRun key={props.runId} {...props} />;
+}
+
+function AnalysisRun({ runId, initialTab }: AnalysisShellProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const live = resolveSource() === "live";
   const tabFromQuery = searchParams.get("tab");
   const [tab, setTabState] = useState<AnalysisTab>(
     initialTab ?? (isTab(tabFromQuery) ? tabFromQuery : "timeline")
@@ -46,10 +50,14 @@ export function AnalysisShell({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [feasibility, setFeasibility] = useState<Feasibility | null>(null);
+  const [lastCalculation, setLastCalculation] = useState<{ runId: string; data: Feasibility } | null>(null);
+  const [busyRecalc, setBusyRecalc] = useState(false);
   const [busySelect, setBusySelect] = useState(false);
   const [connectionLost, setConnectionLost] = useState(
     () => searchParams.get("conn") === "lost"
   );
+  const latestSnapshot = useRef<RunSnapshot | null>(null);
+  const refreshSnapshot = useRef<(() => void) | null>(null);
 
   function setTab(next: AnalysisTab) {
     setTabState(next);
@@ -61,103 +69,115 @@ export function AnalysisShell({
     router.replace(q ? `${base}?${q}` : base, { scroll: false });
   }
 
-  const load = useCallback(
-    async (opts?: { showSpinner?: boolean }) => {
-      if (opts?.showSpinner) setLoading(true);
+  const acceptSnapshot = useCallback((data: RunSnapshot) => {
+    if (data.run.id !== runId || data.events.some((event) => event.run_id !== runId)) return false;
+    const current = latestSnapshot.current;
+    if (
+      current &&
+      (data.events.length < current.events.length ||
+        (current.last_event_id &&
+          data.events[current.events.length - 1]?.event_id !== current.last_event_id) ||
+        (data.events.length === current.events.length && data.run.updated_at < current.run.updated_at) ||
+        (data.buyer_search && current.buyer_search &&
+          data.buyer_search.updated_at < current.buyer_search.updated_at))
+    ) {
+      return false;
+    }
+    latestSnapshot.current = data;
+    setSnap(data);
+    return true;
+  }, [runId]);
+
+  const load = useCallback((opts?: { showSpinner?: boolean }) => {
+    if (opts?.showSpinner) {
+      if (!latestSnapshot.current) setLoading(true);
       setError(null);
-      try {
-        const data = await getApiClient().getRun(runId);
-        setSnap(data);
-        setFeasibility(data.feasibility ?? null);
-        setConnectionLost(false);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : "";
-        setError(
-          msg.startsWith("RUN_NOT_FOUND")
-            ? "این تحلیل در حافظه جلسه نیست. از صفحه خانه یک اجرای آزمایشی جدید بسازید."
-            : fa.error.generic
-        );
-      } finally {
-        setLoading(false);
-      }
-    },
-    [runId]
-  );
+    }
+    refreshSnapshot.current?.();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    let inFlight = false;
+    let queued = false;
+    let attempts = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    async function fetchSnapshot() {
+      if (cancelled) return;
+      if (inFlight) {
+        queued = true;
+        return;
+      }
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
+      inFlight = true;
+      queued = false;
       try {
         const data = await getApiClient().getRun(runId);
         if (cancelled) return;
-        setSnap(data);
-        setFeasibility(data.feasibility ?? null);
-        setError(null);
+        const initial = !latestSnapshot.current;
+        if (acceptSnapshot(data) && initial) {
+          setFeasibility(data.feasibility ?? null);
+          setError(null);
+        } else if (initial) {
+          throw new Error("UNEXPECTED_RUN");
+        }
+        if (!live && !initial) setConnectionLost(false);
+        attempts = 0;
       } catch (e) {
         if (cancelled) return;
         const msg = e instanceof Error ? e.message : "";
-        setError(
-          msg.startsWith("RUN_NOT_FOUND")
-            ? resolveSource() === "live"
-              ? "اجرا یافت نشد. از صفحه خانه یک تحلیل جدید بسازید."
-              : "این تحلیل در حافظه جلسه نیست. از صفحه خانه یک اجرای آزمایشی جدید بسازید."
-            : fa.error.generic
-        );
+        const notFound = msg.startsWith("RUN_NOT_FOUND");
+        if (!latestSnapshot.current) {
+          setError(
+            notFound
+              ? live
+                ? "اجرا یافت نشد. از صفحه خانه یک تحلیل جدید بسازید."
+                : "این تحلیل در حافظه جلسه نیست. از صفحه خانه یک اجرای آزمایشی جدید بسازید."
+              : fa.error.generic
+          );
+        }
+        if (live && !notFound) {
+          const delay = Math.min(8000, 500 * 2 ** attempts);
+          attempts += 1;
+          retryTimer = setTimeout(fetchSnapshot, delay);
+        }
       } finally {
-        if (!cancelled) setLoading(false);
+        inFlight = false;
+        if (!cancelled) {
+          setLoading(false);
+          if (queued && !retryTimer) void fetchSnapshot();
+        }
       }
-    })();
+    }
+
+    refreshSnapshot.current = () => void fetchSnapshot();
+    void fetchSnapshot();
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      refreshSnapshot.current = null;
     };
-  }, [runId]);
-
-  const onSseEvent = useCallback((event: RunEvent) => {
-    setSnap((prev) => {
-      if (!prev) return prev;
-      if (prev.events.some((e) => e.event_id === event.event_id)) return prev;
-      const events = [...prev.events, event];
-      return {
-        ...prev,
-        last_event_id: event.event_id,
-        events,
-        run: {
-          ...prev.run,
-          phase: event.phase,
-          status: event.status,
-          error: event.error_code
-            ? {
-                code: event.error_code,
-                message_fa: event.message_fa,
-                retryable: event.error_code === "PROVIDER_UNAVAILABLE",
-              }
-            : prev.run.error,
-        },
-      };
-    });
-    // Refresh snapshot periodically when pipeline likely finished a stage
-    if (
-      event.phase === "report" ||
-      event.status === "partial" ||
-      event.status === "completed" ||
-      event.status === "failed"
-    ) {
-      void getApiClient()
-        .getRun(runId)
-        .then((data) => {
-          setSnap(data);
-          setFeasibility(data.feasibility ?? null);
-        })
-        .catch(() => undefined);
-    }
-  }, [runId]);
+  }, [acceptSnapshot, live, runId]);
 
   useRunEvents(runId, {
-    enabled: resolveSource() === "live" && !loading && !!snap,
+    enabled: live && !!snap,
     lastEventId: snap?.last_event_id,
-    onEvent: onSseEvent,
-    onConnectionChange: (ok) => setConnectionLost(!ok),
+    onEvent: () => load(),
+    onConnectionChange: (ok) => {
+      setConnectionLost(!ok);
+      if (ok) load();
+    },
   });
+
+  const buyerStatus = snap?.buyer_search?.status;
+  const buyerPending = buyerStatus === "queued" || buyerStatus === "running";
+  useEffect(() => {
+    if (!buyerPending) return;
+    const timer = window.setInterval(() => void load(), 1000);
+    return () => window.clearInterval(timer);
+  }, [buyerPending, load]);
 
   async function selectCountry(code: string) {
     setBusySelect(true);
@@ -175,24 +195,45 @@ export function AnalysisShell({
     setTab("buyers");
     try {
       const next = await getApiClient().selectCountry(runId, code);
-      setSnap(next);
-    } catch {
-      setError(fa.error.generic);
+      if (!acceptSnapshot(next)) void load();
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message === "RATE_LIMITED"
+        ? fa.error.requestLimit
+        : fa.error.generic);
     } finally {
       setBusySelect(false);
     }
   }
 
   async function recalc() {
-    if (!feasibility) return;
+    if (!feasibility || busyRecalc) return;
+    const assumptions = feasibility.input_assumptions;
+    const amounts = [assumptions.quantity, assumptions.target_sell_price_usd, assumptions.fx_rate_usd_irr,
+      ...feasibility.cost_items.map((c) => c.amount)];
+    if (amounts.some((n) => n != null && (!Number.isFinite(Number(n)) || Number(n) < 0)) || assumptions.fx_rate_usd_irr === 0) {
+      setError(fa.feasibility.invalidInput);
+      return;
+    }
+    setBusyRecalc(true);
+    setError(null);
     try {
       const next = await getApiClient().postFeasibility(
         runId,
-        feasibility.cost_items.map((c) => ({ id: c.id, amount: c.amount }))
+        feasibility.cost_items.map(({ id, amount, currency }) => ({ id, amount, currency })),
+        { ...assumptions, unit: assumptions.unit?.trim() || null },
       );
-      setFeasibility(next);
-    } catch {
-      setError(fa.error.generic);
+      if (latestSnapshot.current?.run.id === runId) {
+        setFeasibility(next);
+        setLastCalculation({ runId, data: next });
+      }
+    } catch (exc) {
+      if (latestSnapshot.current?.run.id === runId) {
+        const message = exc instanceof Error ? exc.message : "";
+        setError(message === "INVALID_FEASIBILITY_INPUT" ? fa.feasibility.invalidInput
+          : message === "FEASIBILITY_CONFLICT" ? fa.feasibility.conflict : fa.error.generic);
+      }
+    } finally {
+      setBusyRecalc(false);
     }
   }
 
@@ -200,10 +241,10 @@ export function AnalysisShell({
     if (!snap) return {} as Partial<Record<AnalysisTab, "ready" | "waiting" | "blocked">>;
     const { run, markets, buyers, report } = snap;
     const blocked =
-      run.status === "provider_unavailable" || run.status === "rate_limited";
+      run.status === "provider_unavailable" || run.status === "rate_limited" || run.status === "failed";
     return {
       timeline: "ready" as const,
-      markets: blocked ? ("blocked" as const) : markets.length ? ("ready" as const) : ("waiting" as const),
+      markets: markets.length ? ("ready" as const) : blocked ? ("blocked" as const) : ("waiting" as const),
       buyers: !run.selected_country
         ? ("waiting" as const)
         : buyers.length
@@ -251,7 +292,7 @@ export function AnalysisShell({
 
   const { run, events, markets, buyers, report } = snap;
   const blocked =
-    run.status === "provider_unavailable" || run.status === "rate_limited";
+    run.status === "provider_unavailable" || run.status === "rate_limited" || run.status === "failed";
   const latest = events[events.length - 1];
 
   return (
@@ -282,7 +323,7 @@ export function AnalysisShell({
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2 pt-1">
+          {!live ? <div className="flex flex-wrap gap-2 pt-1">
             <button
               type="button"
               className="rounded-xl border border-[var(--cockpit-line)] px-3 py-1.5 text-[0.7rem] text-[var(--cockpit-faint)] hover:text-white"
@@ -290,7 +331,7 @@ export function AnalysisShell({
             >
               {fa.cockpit.simulateDisconnect}
             </button>
-          </div>
+          </div> : null}
         </div>
       ) : (
         <div className="study-surface min-w-0 space-y-4 overflow-x-clip p-3 sm:p-5">
@@ -311,7 +352,7 @@ export function AnalysisShell({
           </div>
 
           {tab === "markets" ? (
-            blocked ? (
+            blocked && !markets.length ? (
               <EmptyState title={fa.markets.empty} hint={run.error?.message_fa} />
             ) : (
               <MarketComparison
@@ -337,7 +378,7 @@ export function AnalysisShell({
                   </button>
                 }
               />
-            ) : busySelect ? (
+            ) : busySelect || buyerPending ? (
               <LoadingState
                 label={fa.buyers.searching}
                 hint={fa.buyers.searchingHint}
@@ -350,7 +391,13 @@ export function AnalysisShell({
             ) : buyers.length === 0 ? (
               <EmptyState
                 title={fa.buyers.empty}
-                hint={run.error?.message_fa || fa.buyers.emptyHint}
+                hint={snap.buyer_search?.error?.message_fa || run.error?.message_fa || fa.buyers.emptyHint}
+                action={snap.buyer_search?.error?.retryable ? (
+                  <button type="button" className="nova-btn-ghost"
+                    onClick={() => void selectCountry(snap.buyer_search!.country_code)}>
+                    {fa.error.retry}
+                  </button>
+                ) : undefined}
               />
             ) : (
               <div className="space-y-3">
@@ -381,24 +428,35 @@ export function AnalysisShell({
                     {fa.feasibility.sampleNote}
                   </p>
                 ) : null}
-                <CostEditor
-                  items={feasibility.cost_items}
-                  onChange={(id, amount) => {
-                    setFeasibility({
-                      ...feasibility,
-                      cost_items: feasibility.cost_items.map((c) =>
-                        c.id === id ? { ...c, amount } : c
-                      ),
-                    });
+                <form
+                  aria-busy={busyRecalc}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void recalc();
                   }}
-                />
-                <button
-                  type="button"
-                  className="nova-btn-primary"
-                  onClick={() => void recalc()}
                 >
-                  {fa.feasibility.recalc}
-                </button>
+                  <fieldset disabled={busyRecalc} className="min-w-0 space-y-4">
+                    <CostEditor
+                      items={feasibility.cost_items}
+                      assumptions={feasibility.input_assumptions}
+                      onChange={(id, update) => {
+                        setFeasibility((current) => current && ({
+                          ...current,
+                          cost_items: current.cost_items.map((c) => c.id === id ? { ...c, ...update } : c),
+                        }));
+                      }}
+                      onAssumptionChange={(key, value) => {
+                        setFeasibility((current) => current && ({
+                          ...current,
+                          input_assumptions: { ...current.input_assumptions, [key]: value },
+                        }));
+                      }}
+                    />
+                    <button type="submit" className="nova-btn-primary">
+                      {busyRecalc ? fa.feasibility.calculating : fa.feasibility.recalc}
+                    </button>
+                  </fieldset>
+                </form>
                 {feasibility.missing_inputs.length ? (
                   <div className="nova-panel p-4">
                     <p className="mb-2 font-medium">{fa.feasibility.missing}</p>
@@ -409,14 +467,16 @@ export function AnalysisShell({
                     </ul>
                   </div>
                 ) : null}
-                <ScenarioComparison scenarios={feasibility.scenario_results} />
+                <ScenarioComparison scenarios={feasibility.scenario_results} currency={feasibility.currency} />
               </div>
             )
           ) : null}
 
           {tab === "report" ? (
             report ? (
-              <ReportView report={report} />
+              <ReportView report={lastCalculation?.runId === runId
+                ? { ...report, feasibility: lastCalculation.data }
+                : report} />
             ) : (
               <EmptyState
                 title={fa.report.title}

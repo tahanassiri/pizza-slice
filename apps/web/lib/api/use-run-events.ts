@@ -19,7 +19,7 @@ export function useRunEvents(
   }
 ) {
   const { enabled = true, lastEventId, onEvent, onConnectionChange } = opts;
-  const lastIdRef = useRef<string | null | undefined>(lastEventId);
+  const cursorRef = useRef({ runId, id: lastEventId });
   const onEventRef = useRef(onEvent);
   const onConnRef = useRef(onConnectionChange);
 
@@ -29,8 +29,10 @@ export function useRunEvents(
   }, [onEvent, onConnectionChange]);
 
   useEffect(() => {
-    lastIdRef.current = lastEventId;
-  }, [lastEventId]);
+    if (cursorRef.current.runId !== runId || !cursorRef.current.id) {
+      cursorRef.current = { runId, id: lastEventId };
+    }
+  }, [runId, lastEventId]);
 
   useEffect(() => {
     if (!enabled || resolveSource() !== "live" || !runId) return;
@@ -42,34 +44,34 @@ export function useRunEvents(
 
     function connect() {
       if (closed) return;
-      const url = eventsUrl(runId, lastIdRef.current);
-      es = new EventSource(url);
+      const url = eventsUrl(runId, cursorRef.current.id);
+      const connection = new EventSource(url, { withCredentials: true });
+      es = connection;
 
-      es.addEventListener("open", () => {
+      connection.addEventListener("open", () => {
+        if (closed || es !== connection) return;
         attempt = 0;
         onConnRef.current?.(true);
       });
 
-      es.addEventListener("run_event", (msg) => {
+      connection.addEventListener("run_event", (msg) => {
+        if (closed || es !== connection) return;
         try {
           const data = JSON.parse((msg as MessageEvent).data) as RunEvent;
-          if (data.event_id) lastIdRef.current = data.event_id;
+          if (data?.run_id !== runId || typeof data.event_id !== "string" || !data.event_id) return;
+          if (data.event_id === cursorRef.current.id) return;
+          cursorRef.current.id = data.event_id;
           onEventRef.current(data);
         } catch {
           // ignore malformed
         }
       });
 
-      // Heartbeat: keep-alive only — do not treat as progress
-      es.addEventListener("heartbeat", () => {
-        onConnRef.current?.(true);
-      });
-
-      es.onerror = () => {
+      connection.onerror = () => {
+        if (closed || es !== connection) return;
         onConnRef.current?.(false);
-        es?.close();
+        connection.close();
         es = null;
-        if (closed) return;
         const delay = Math.min(8000, 500 * 2 ** attempt);
         attempt += 1;
         retryTimer = setTimeout(connect, delay);

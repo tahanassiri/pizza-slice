@@ -5,9 +5,11 @@
 
 import type {
   AdminSettingsView,
+  CostUpdateInput,
   CreateRunInput,
   CreateRunResponse,
   Feasibility,
+  FeasibilityAssumptions,
   FixtureId,
   RunSnapshot,
 } from "@/types";
@@ -25,7 +27,8 @@ export interface NovaApiClient {
   getBuyers(id: string): Promise<RunSnapshot["buyers"]>;
   postFeasibility(
     id: string,
-    costUpdates?: { id: string; amount: number | null }[]
+    costUpdates?: CostUpdateInput[],
+    assumptions?: FeasibilityAssumptions
   ): Promise<Feasibility>;
   getReport(id: string): Promise<NonNullable<RunSnapshot["report"]>>;
   getAdminSettings(): Promise<AdminSettingsView>;

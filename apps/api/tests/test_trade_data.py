@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from app.db.session import SessionLocal
 from app.providers.registry import resolve_providers
+from app.trade_data.adapter import TradeDataProviderAdapter
 from app.trade_data.cache import TtlCache
 from app.trade_data.research import ResearchTradeProvider
 from app.trade_data.service import TradeDataService
@@ -31,6 +32,8 @@ def test_hs_to_wits_product_mapping():
 
 
 def test_wits_fetch_uses_cache_and_records(monkeypatch):
+    fetched_at = "2026-01-01T12:00:00+00:00"
+    monkeypatch.setattr("app.trade_data.wits._now", lambda: fetched_at)
     sample = {
         "dataSets": [
             {
@@ -58,13 +61,69 @@ def test_wits_fetch_uses_cache_and_records(monkeypatch):
 
         q = TradeDataQuery(hs_code="080251", flow="import", product_hint="pistachio")
         first = provider.fetch(q)
-        assert first.quality_status in {"verified", "partial"}
+        assert first.quality_status == "partial"
         assert len(first.records) == 3
         assert first.cache_hit is False
+        assert first.coverage == "3/3 reporters · product=06-15_Vegetable · partner=WLD"
+        assert all(source["fetched_at"] == fetched_at for source in first.sources)
 
+        fetched_at = "2026-01-01T12:10:00+00:00"
         second = provider.fetch(q)
         assert second.cache_hit is True
         assert len(second.records) == 3
+        assert second.retrieved_at == first.retrieved_at
+        assert {source["url"]: source for source in second.sources} == {
+            source["url"]: source for source in first.sources
+        }
+        assert http.get.call_count == 3
+
+
+def test_wits_aggregate_values_are_normalized_to_usd():
+    provider = WitsTradeProvider(cache=TtlCache(), reporters=["USA"])
+    with patch("httpx.Client") as client_cls:
+        http = client_cls.return_value.__enter__.return_value
+        http.get.return_value.status_code = 200
+        http.get.return_value.json.return_value = {
+            "dataSets": [
+                {"series": {"0:0:0:0:0": {"observations": {"0": [3_168_471_121.076, 0]}}}}
+            ]
+        }
+        result = provider.fetch(TradeDataQuery(years=(2023,), origin="ایران"))
+
+    assert result.records[0].value == 3_168_471_121_076
+    assert result.records[0].unit == result.unit == "USD"
+    assert result.records[0].partner_iso3 == "WLD"
+    assert result.sources[0].get("published_at") is None
+
+
+def test_adapter_fetches_trade_stats_and_markets_once():
+    service = MagicMock(spec=TradeDataService)
+    service.fetch.return_value = TradeDataResult(
+        quality_status="partial",
+        source_name="WITS",
+        records=[
+            TradeRecord(
+                reporter_iso3="USA",
+                partner_iso3="WLD",
+                year=2023,
+                flow="import",
+                value=1500.0,
+                unit="USD",
+                currency="USD",
+                product_code="Total",
+                product_label="All products",
+            )
+        ],
+    )
+    trade = TradeDataProviderAdapter(service)
+
+    stats, markets = trade.trade_stats_and_markets("پسته", "ایران", "080251")
+
+    service.fetch.assert_called_once_with(
+        TradeDataQuery(hs_code="080251", hs_revision="HS", product_hint="پسته", origin="ایران")
+    )
+    assert stats.ok and stats.meta["records"] == 1
+    assert markets.ok and markets.markets[0].country_code == "US"
 
 
 def test_research_never_invents_numeric_records():
@@ -181,7 +240,9 @@ def test_to_markets_ranks_records():
         sources=[
             {
                 "url": "https://wits.worldbank.org/x",
-                "title": "WITS DEU",
+                "title": "WITS DEU (compare TUR)",
+                "reporter_iso3": "DEU",
+                "reference_year": 2022,
                 "publisher": "WITS",
                 "fetched_at": "t",
                 "provider": "wits",
@@ -193,6 +254,11 @@ def test_to_markets_ranks_records():
     pr = trade_result_to_markets(result, product="پسته", origin="ایران")
     assert pr.ok
     assert [m.country_code for m in pr.markets] == ["DE", "TR", "AE"]
+    assert [[source.url for source in m.sources] for m in pr.markets] == [
+        ["https://wits.worldbank.org/x"],
+        [],
+        [],
+    ]
     assert any(m.key == "data_quality" for m in pr.markets[0].metrics)
     assert any(m.key == "pool_share" for m in pr.markets[0].metrics)
     assert any("چرا این کشور" in e for e in pr.markets[0].evidence)

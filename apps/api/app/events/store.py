@@ -79,15 +79,13 @@ def list_events(
     db: Session, run_id: str, *, after_event_id: str | None = None
 ) -> list[RunEventOut]:
     q = select(RunEventRow).where(RunEventRow.run_id == run_id).order_by(RunEventRow.seq.asc())
-    rows = list(db.scalars(q).all())
     if after_event_id:
-        idx = next((i for i, r in enumerate(rows) if r.event_id == after_event_id), None)
-        if idx is not None:
-            rows = rows[idx + 1 :]
-        else:
-            # Unknown cursor: return full ordered history (safe reconnect)
-            pass
-    return [row_to_event(r) for r in rows]
+        cursor = select(RunEventRow.seq).where(
+            RunEventRow.run_id == run_id, RunEventRow.event_id == after_event_id
+        ).scalar_subquery()
+        # Unknown cursors replay the full history for this run.
+        q = q.where(RunEventRow.seq > func.coalesce(cursor, -1))
+    return [row_to_event(r) for r in db.scalars(q)]
 
 
 def get_event_seq(db: Session, event_id: str) -> int | None:

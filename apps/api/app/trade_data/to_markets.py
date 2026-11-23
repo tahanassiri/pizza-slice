@@ -8,27 +8,38 @@ from app.trade_data.types import TradeDataResult
 from app.trade_data.wits import ISO3_NAME_FA, ISO3_TO_ISO2
 
 
-def _sources_from_result(result: TradeDataResult) -> list[Source]:
+def _sources_from_result(
+    result: TradeDataResult,
+) -> tuple[list[Source], dict[tuple[str, int], list[Source]]]:
     out: list[Source] = []
+    by_reporter_year: dict[tuple[str, int], list[Source]] = {}
     for s in result.sources or []:
         try:
-            out.append(
-                Source(
-                    url=str(s.get("url") or result.source_url or "https://wits.worldbank.org"),
-                    title=str(s.get("title") or result.source_name or "trade source"),
-                    publisher=str(s.get("publisher") or result.source_name or "unknown"),
-                    published_at=s.get("published_at"),
-                    fetched_at=str(s.get("fetched_at") or result.retrieved_at or ""),
-                    provider=str(s.get("provider") or result.provider_id or "trade"),
-                    reliability_note=str(
-                        s.get("reliability_note")
-                        or f"quality={result.quality_status}; {result.coverage}"
-                    ),
-                )
+            source = Source(
+                url=str(s.get("url") or result.source_url or "https://wits.worldbank.org"),
+                title=str(s.get("title") or result.source_name or "trade source"),
+                publisher=str(s.get("publisher") or result.source_name or "unknown"),
+                published_at=s.get("published_at"),
+                fetched_at=str(s.get("fetched_at") or result.retrieved_at or ""),
+                provider=str(s.get("provider") or result.provider_id or "trade"),
+                reliability_note=str(
+                    s.get("reliability_note")
+                    or f"quality={result.quality_status}; {result.coverage}"
+                ),
             )
         except Exception:
             continue
-    return out
+        out.append(source)
+        reporter = s.get("reporter_iso3")
+        year = s.get("reference_year")
+        if (
+            s.get("url")
+            and source.provider == result.provider_id
+            and isinstance(reporter, str)
+            and isinstance(year, int)
+        ):
+            by_reporter_year.setdefault((reporter, year), []).append(source)
+    return out, by_reporter_year
 
 
 def trade_result_to_markets(
@@ -39,7 +50,7 @@ def trade_result_to_markets(
     limit: int = 3,
 ) -> ProviderResult:
     """Rank markets by product-sector import value (share among pool). No fake ranks."""
-    sources = _sources_from_result(result)
+    sources, sources_by_reporter_year = _sources_from_result(result)
 
     if result.quality_status == "unavailable" or not result.records:
         return ProviderResult(
@@ -87,11 +98,7 @@ def trade_result_to_markets(
         value = float(rec.value or 0)
         unit = rec.unit or result.unit or "USD"
         share = (value / pool_total * 100.0) if pool_total > 0 else 0.0
-        market_sources = [
-            s
-            for s in sources
-            if rec.reporter_iso3 in (s.title or "") or rec.reporter_iso3 in (s.url or "")
-        ] or sources[:1]
+        market_sources = sources_by_reporter_year.get((rec.reporter_iso3, year), [])
 
         is_aggregate = (
             "aggregate" in (rec.product_label or "").lower()

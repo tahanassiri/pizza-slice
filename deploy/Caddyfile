@@ -12,20 +12,3 @@ magical.net44.ir {
 		reverse_proxy web:3000
 	}
 }
-
-# Keep raw-IP / loopback HTTP access (no TLS on bare IP).
-# Do not use a blanket `:80` site — that would steal ACME HTTP-01
-# challenges for the hostname above.
-http://167.104.219.24, http://localhost, http://127.0.0.1 {
-	encode gzip
-
-	handle /api/* {
-		reverse_proxy api:8000
-	}
-	handle /health {
-		reverse_proxy api:8000
-	}
-	handle {
-		reverse_proxy web:3000
-	}
-}
