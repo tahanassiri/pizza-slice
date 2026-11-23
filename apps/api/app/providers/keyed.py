@@ -1,10 +1,41 @@
-"""Keyed LLM transports. A call happens only when a caller already reserved budget
-and, for research, only after no-cost clearance. This module does not decide that.
+"""Keyed LLM transports. A call happens only when a caller already reserved budget.
+The admin-selected model is authorized even when the API is billable.
+This module does not log keys.
 """
 
 from __future__ import annotations
 
+import re
+
 import httpx
+
+_SECRET = re.compile(r"(AIza[0-9A-Za-z_\-]{8,}|sk-[A-Za-z0-9_\-]{8,}|Bearer\s+\S+)", re.I)
+
+
+class ModelCallError(RuntimeError):
+    """Real endpoint failure. message_fa never includes the API key."""
+
+    def __init__(self, *, status: str, http_status: int | None, message_fa: str):
+        self.status = status
+        self.http_status = http_status
+        self.message_fa = _SECRET.sub("[redacted]", message_fa)[:300]
+        super().__init__(self.message_fa)
+
+
+def _redact(text: str) -> str:
+    return _SECRET.sub("[redacted]", text or "")[:180]
+
+
+def _status_for(http_status: int, body: str) -> str:
+    from app.providers.model_clearance import classify_probe
+
+    return classify_probe(
+        provider="",
+        model_id="",
+        http_status=http_status,
+        body=_redact(body),
+        error=None,
+    )
 
 
 def _digits_hs(text: str) -> tuple[str | None, str]:
@@ -43,7 +74,11 @@ class KeyedGeminiLLM:
                 },
             )
         if response.status_code != 200:
-            return ""
+            raise ModelCallError(
+                status=_status_for(response.status_code, response.text),
+                http_status=response.status_code,
+                message_fa=f"{_status_for(response.status_code, response.text)} — HTTP {response.status_code}. {_redact(response.text)}",
+            )
         return (
             response.json()
             .get("candidates", [{}])[0]
@@ -58,16 +93,15 @@ class KeyedGeminiLLM:
             return hs_hint.strip(), "medium"
         try:
             return _digits_hs(self._generate(_HS_PROMPT.format(product=product), max_tokens=32))
+        except ModelCallError:
+            raise
         except Exception:
             return None, "unknown"
 
     def decide_research_action(self, context: dict) -> str:
-        import json
+        from app.agents.llm_decide import render_decision_prompt
 
-        from app.agents.llm_decide import DECISION_USER_TEMPLATE
-
-        prompt = DECISION_USER_TEMPLATE.format(context=json.dumps(context, ensure_ascii=False))
-        return self._generate(prompt, max_tokens=1024)
+        return self._generate(render_decision_prompt(context), max_tokens=1024)
 
     def complete_json(self, prompt: str) -> str:
         return self._generate(prompt, max_tokens=1024)
@@ -106,7 +140,11 @@ class KeyedOpenAICompatLLM:
                 },
             )
         if response.status_code != 200:
-            return ""
+            raise ModelCallError(
+                status=_status_for(response.status_code, response.text),
+                http_status=response.status_code,
+                message_fa=f"{_status_for(response.status_code, response.text)} — HTTP {response.status_code}. {_redact(response.text)}",
+            )
         return (response.json().get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
 
     def classify_hs(self, product: str, hs_hint: str | None) -> tuple[str | None, str]:
@@ -114,16 +152,16 @@ class KeyedOpenAICompatLLM:
             return hs_hint.strip(), "medium"
         try:
             return _digits_hs(self._chat(_HS_PROMPT.format(product=product), max_tokens=32))
+        except ModelCallError:
+            raise
         except Exception:
             return None, "unknown"
 
     def decide_research_action(self, context: dict) -> str:
-        import json
-
-        from app.agents.llm_decide import DECISION_USER_TEMPLATE
+        from app.agents.llm_decide import render_decision_prompt
 
         return self._chat(
-            DECISION_USER_TEMPLATE.format(context=json.dumps(context, ensure_ascii=False)),
+            render_decision_prompt(context),
             max_tokens=1024,
             temperature=0.2,
         )

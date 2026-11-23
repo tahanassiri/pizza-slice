@@ -108,7 +108,7 @@ def test_quota_exhausted_surface(client, monkeypatch):
             body="ok",
             error=None,
         )
-        == "Billing permission required"
+        == "Verified"
     )
 
 

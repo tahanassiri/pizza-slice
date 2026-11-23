@@ -281,24 +281,21 @@ def test_startup_does_not_fail_an_open_run_and_keeps_the_checkpoint():
 
 
 def test_connection_probe_statuses_do_not_treat_billable_200_as_free():
+    from app.providers.model_clearance import is_research_cleared
+
     assert classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=None, body="", error="down") == "Failed"
     assert classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=429, body="", error=None) == "Rate-limited"
     assert classify_probe(provider="google", model_id="missing-model", http_status=404, body="", error=None) == "Unavailable"
     assert classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=500, body="", error=None) == "Unavailable"
     assert classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=401, body="unauthorized", error=None) == "Failed"
+    assert classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=402, body="billing", error=None) == "Billing problem"
     assert (
         classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=200, body="ok", error=None)
-        == "Billing permission required"
+        == "Verified"
     )
-    monkeypatch = __import__("os")
-    monkeypatch.environ["NO_COST_LLM_MODELS"] = "local-free"
-    try:
-        assert (
-            classify_probe(provider="other", model_id="local-free", http_status=200, body="ok", error=None)
-            == "Verified"
-        )
-    finally:
-        monkeypatch.environ.pop("NO_COST_LLM_MODELS", None)
+    assert is_research_cleared("gemini-4-hydrogen", "Configured") is True
+    assert is_research_cleared("gemini-4-hydrogen", "Verified") is True
+    assert is_research_cleared("gemini-4-hydrogen", "Billing problem") is False
 
 
 def test_process_kill_then_restart_resumes_without_repeating_classify(tmp_path: Path):

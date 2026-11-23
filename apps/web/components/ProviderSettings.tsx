@@ -130,9 +130,19 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
         body: JSON.stringify({ provider_id: `model:${selectedModel}` }),
       });
       if (!res.ok) throw new Error("fail");
-      const body = (await res.json()) as { message_fa?: string; connection_status?: string };
+      const body = (await res.json()) as {
+        message_fa?: string;
+        connection_status?: string;
+        billing_status?: string;
+      };
       setModelCheckMessage(
-        [body.connection_status, body.message_fa].filter(Boolean).join(" — ") ||
+        [
+          body.connection_status,
+          body.billing_status === "Billing problem" ? body.billing_status : "",
+          body.message_fa,
+        ]
+          .filter(Boolean)
+          .join(" — ") ||
           "نتیجه بررسی کلید مشخص نشد."
       );
     } catch {

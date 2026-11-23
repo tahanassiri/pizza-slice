@@ -247,13 +247,32 @@ class ToolExecutor:
             cleared = bool(self.llm) and bool(getattr(self.llm, "research_cleared", False))
             stub_llm = bool(self.llm) and getattr(self.llm, "id", "") == "stub_llm"
             if self.llm and hasattr(self.llm, "classify_hs") and (cleared or stub_llm):
-                hs, conf = guarded_model_call(
-                    self.db,
-                    self.run_id,
-                    "classify",
-                    lambda: self.llm.classify_hs(product, hs_hint),  # type: ignore[union-attr]
-                    provider_id=str(getattr(self.llm, "id", "llm")),
-                )
+                try:
+                    hs, conf = guarded_model_call(
+                        self.db,
+                        self.run_id,
+                        "classify",
+                        lambda: self.llm.classify_hs(product, hs_hint),  # type: ignore[union-attr]
+                        provider_id=str(getattr(self.llm, "id", "llm")),
+                    )
+                except Exception as exc:
+                    from app.providers.keyed import ModelCallError
+
+                    if isinstance(exc, ModelCallError):
+                        code = {
+                            "Billing problem": "MODEL_BILLING",
+                            "Rate-limited": "MODEL_RATE_LIMITED",
+                            "Unavailable": "MODEL_UNAVAILABLE",
+                        }.get(exc.status, "MODEL_FAILED")
+                        return ToolResult(
+                            tool="classify_product",
+                            ok=False,
+                            message_fa=exc.message_fa,
+                            error_code=code,
+                            data={"product": product, "budget_reserved": True},
+                            spent={},
+                        )
+                    raise
                 reserved = True
                 self.budget = budget_mod.ensure_run_budget(self.db, self.run_id)
             elif hs_hint:

@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy.orm import Session
 
 from app.agents.llm_decide import (
-    DECISION_USER_TEMPLATE,
+    render_decision_prompt,
     AgentAction,
     blocked_action,
     build_decision_context,
@@ -23,10 +23,24 @@ from app.evidence.store import evidence_index_for_run, record_claim
 from app.jobs.durable import renew_lease, write_checkpoint
 from app.models.entities import Run
 from app.schemas.contracts import Market, Source
+from app.providers.keyed import ModelCallError
 from app.tools.budget import BudgetExceeded, ensure_run_budget, guarded_model_call
 from app.tools.executor import ToolExecutor
 
+_MODEL_CODE = {
+    "Billing problem": "MODEL_BILLING",
+    "Rate-limited": "MODEL_RATE_LIMITED",
+    "Unavailable": "MODEL_UNAVAILABLE",
+    "Failed": "MODEL_FAILED",
+}
+
 EmitFn = Callable[..., Awaitable[Any]]
+
+
+def _remember_model_status(db: Session, status: str) -> None:
+    from app.services.admin_service import _write_model_verification, get_selected_model
+
+    _write_model_verification(db, get_selected_model(db), status)
 
 
 def _budget_left(executor: ToolExecutor) -> dict[str, int]:
@@ -118,6 +132,20 @@ async def run_decision_loop(
         classify = executor.execute(
             ToolCall(tool="classify_product", args={"product": run.product, "hs_hint": run.guessed_hs_code})
         )
+        if not classify.ok and str(classify.error_code or "").startswith("MODEL_"):
+            final_action = blocked_action(str(classify.error_code), classify.message_fa)
+            await emit(
+                db,
+                run,
+                phase="product_classify",
+                status="partial",
+                message_fa=classify.message_fa,
+                error_code=classify.error_code,
+                event_id=f"evt_{run.id}_classify_failed",
+            )
+            return await _finish(
+                db, run, executor, emit, state, final_action, [], "miss", tools_invoked
+            )
         tools_invoked.append("classify_product")
         if classify.data.get("hs_code"):
             run.guessed_hs_code = str(classify.data["hs_code"])
@@ -230,11 +258,14 @@ async def run_decision_loop(
         )
 
     if not llm_is_research_decision_maker(executor.llm):
-        final_action = blocked_action(
-            "LLM_UNAVAILABLE",
-            "مدل فعال برای تصمیم تحقیق تأیید نشده یا بدون‌هزینه نیست. "
-            "اجرا مسدود و قابل بازیابی است. تصمیم اکتشافی به‌جای مدل اجرا نشد.",
-        )
+        if getattr(executor.llm, "id", "") == "stub_llm":
+            reason = "حالت آزمایشی stub است و مدل زنده فراخوانی نشد. تصمیم اکتشافی اجرا نشد."
+        else:
+            reason = (
+                "مدل انتخاب‌شده ادمین کلید قابل استفاده یا وضعیت اتصال معتبر ندارد. "
+                "مدل دیگری جایگزین نشد و تصمیم اکتشافی اجرا نشد."
+            )
+        final_action = blocked_action("LLM_UNAVAILABLE", reason)
         await emit(
             db,
             run,
@@ -275,7 +306,8 @@ async def run_decision_loop(
 
     final_action: AgentAction | None = None
     evidence_index = evidence_index_for_run(db, run.id)
-    for iteration in range(max_iter):
+    start_iter = int(checkpoint.get("decision_iteration") or 0)
+    for iteration in range(start_iter, max_iter):
         if not persist():
             return _lease_lost(state, run)
         if time.monotonic() - started > wall:
@@ -310,28 +342,45 @@ async def run_decision_loop(
             budget_left=left,
         )
         action: AgentAction | None = None
-        for _attempt in range(retries + 1):
-            try:
-                raw = guarded_model_call(
-                    db,
-                    run.id,
-                    "decide",
-                    lambda: _ask_model(executor.llm, context),
-                    provider_id=str(getattr(executor.llm, "id", "llm")),
-                )
-                executor.budget = ensure_run_budget(db, run.id)
-            except BudgetExceeded as exc:
-                final_action = AgentAction(
-                    action="conclude",
-                    stop_reason="budget_exceeded",
-                    rationale_fa=exc.message_fa,
-                    decision_source="llm",
-                )
-                action = final_action
-                break
-            action = parse_model_decision(raw)
-            if action:
-                break
+        pending = checkpoint.get("pending_decision") or {}
+        if pending.get("iteration") == iteration and pending.get("raw"):
+            action = parse_model_decision(str(pending.get("raw")))
+        if action is None:
+            for _attempt in range(retries + 1):
+                try:
+                    raw = guarded_model_call(
+                        db,
+                        run.id,
+                        "decide",
+                        lambda: _ask_model(executor.llm, context),
+                        provider_id=str(getattr(executor.llm, "id", "llm")),
+                    )
+                    executor.budget = ensure_run_budget(db, run.id)
+                except BudgetExceeded as exc:
+                    final_action = AgentAction(
+                        action="conclude",
+                        stop_reason="budget_exceeded",
+                        rationale_fa=exc.message_fa,
+                        decision_source="llm",
+                    )
+                    action = final_action
+                    break
+                except ModelCallError as exc:
+                    _remember_model_status(db, exc.status)
+                    final_action = blocked_action(
+                        _MODEL_CODE.get(exc.status, "MODEL_FAILED"),
+                        exc.message_fa,
+                    )
+                    action = final_action
+                    break
+                if getattr(executor.llm, "id", "") != "stub_llm":
+                    _remember_model_status(db, "Verified")
+                action = parse_model_decision(raw)
+                if action:
+                    checkpoint["pending_decision"] = {"iteration": iteration, "raw": raw}
+                    if not persist():
+                        return _lease_lost(state, run)
+                    break
         if final_action and final_action.stop_reason == "budget_exceeded":
             break
         if action is None:
@@ -477,7 +526,7 @@ def _ask_model(llm: object, context: dict[str, Any]) -> str:
         if isinstance(raw, dict):
             return json.dumps(raw)
     if hasattr(llm, "complete_json"):
-        prompt = DECISION_USER_TEMPLATE.format(context=json.dumps(context, ensure_ascii=False))
+        prompt = render_decision_prompt(context)
         return str(llm.complete_json(prompt))
     return ""
 

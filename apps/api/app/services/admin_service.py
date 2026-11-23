@@ -9,7 +9,7 @@ from app.core.config import get_settings
 from app.core.security import encrypt_secret
 from app.models.entities import AppMeta, ProviderSetting
 from app.providers.llm_catalog import all_models, catalog_grouped, models_by_id
-from app.providers.model_clearance import is_research_cleared
+from app.providers.model_clearance import billing_status_for, is_research_cleared, normalize_connection_status
 from app.schemas.contracts import (
     AdminSettingsOut,
     LlmModelOptionOut,
@@ -98,9 +98,10 @@ def trade_sources_view(db: Session) -> list[TradeSourceStatusOut]:
             note_fa=(
                 "مدل تصمیم‌یار تحقیق — "
                 + (
-                    f"وضعیت اتصال: {verification}. پژوهش فقط پس از تأیید بدون‌هزینه ارسال می‌شود."
+                    f"اتصال: {verification}. صورتحساب: {billing_status_for(verification)}. "
+                    "انتخاب ادمین مجوز فراخوانی همین مدل است و بودجه سرور اعمال می‌شود."
                     if has_key
-                    else "بدون مدل بدون‌هزینهٔ تأییدشده، پژوهش مسدود است"
+                    else "بدون کلید همین نسخه، پژوهش اجرا نمی‌شود"
                 )
             ),
         ),
@@ -206,7 +207,7 @@ def settings_view(db: Session) -> AdminSettingsOut:
         error_history=[
             {
                 "at": datetime.now(timezone.utc).isoformat(),
-                "message_fa": "بدون مدل بدون‌هزینهٔ تأییدشده پژوهش مسدود می‌ماند. راهبرد اکتشافی اجرا نمی‌شود.",
+                "message_fa": "پژوهش با مدل انتخاب‌شده ادمین اجرا می‌شود. اگر اتصال یا صورتحساب خطا بدهد، همان خطا نشان داده می‌شود. راهبرد اکتشافی اجرا نمی‌شود.",
             }
         ],
         is_mock_ui=False,
@@ -303,11 +304,7 @@ def read_model_verification(db: Session, model_id: str) -> str:
         payload = json.loads(row.value)
     except json.JSONDecodeError:
         return "Failed"
-    status = str(payload.get("connection_status") or "Failed")
-    from app.providers.model_clearance import CONNECTION_STATUSES
-
-    if status not in CONNECTION_STATUSES:
-        return "Failed"
+    status = normalize_connection_status(str(payload.get("connection_status") or "Failed"))
     return status
 
 
@@ -334,10 +331,13 @@ def _write_model_verification(db: Session, model_id: str, status: str, *, detail
 def _connection_message(model_id: str, status: str, *, http_status: int | None) -> str:
     http = f"HTTP {http_status}" if http_status is not None else "بدون پاسخ HTTP"
     labels = {
-        "Verified": f"Verified — مدل «{model_id}» به‌عنوان بدون‌هزینه تأیید شد ({http}).",
-        "Billing permission required": (
-            f"Billing permission required — نقطهٔ پایانی «{model_id}» پاسخ داد ({http}) "
-            "اما رایگان‌بودن درخواست اثبات نشد. پژوهش خودکار به این مدل سوئیچ نمی‌شود."
+        "Verified": (
+            f"Verified — اتصال «{model_id}» برقرار شد ({http}). "
+            "هزینهٔ احتمالی داخل بودجه سرور مجاز است."
+        ),
+        "Billing problem": (
+            f"Billing problem — «{model_id}» مشکل صورتحساب برگرداند ({http}). "
+            "اتصال و صورتحساب جدا ثبت شدند. مدل دیگری جایگزین نشد."
         ),
         "Rate-limited": f"Rate-limited — سهمیه یا نرخ «{model_id}» محدود است ({http}).",
         "Unavailable": f"Unavailable — مدل «{model_id}» در نقطهٔ پایانی در دسترس نیست ({http}). شناسه کاتالوگ معتبر فرض نشد.",
@@ -352,7 +352,7 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
     # Model-version test: provider_id may be "model:<id>"
     if provider_id.startswith("model:"):
         from app.providers.keyed import probe_selected_endpoint
-        from app.providers.model_clearance import classify_probe, is_research_cleared
+        from app.providers.model_clearance import billing_status_for, classify_probe
 
         model_id = provider_id.removeprefix("model:")
         meta = models_by_id().get(model_id)
@@ -380,11 +380,11 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
             error=probe.get("error"),
         )
         _write_model_verification(db, model_id, status, detail=str(probe.get("error") or probe.get("http_status") or ""))
-        cleared = is_research_cleared(model_id, status)
         return TestConnectionOut(
-            ok=cleared,
+            ok=status == "Verified",
             checked=True,
             connection_status=status,
+            billing_status=billing_status_for(status),
             message_fa=_connection_message(model_id, status, http_status=probe.get("http_status")),
         )
 

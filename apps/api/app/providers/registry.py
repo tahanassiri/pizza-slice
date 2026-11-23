@@ -55,16 +55,19 @@ def resolve_providers(db: Session) -> ProviderBundle:
     if meta and model_key and is_research_cleared(model, verification):
         llm = build_llm(meta.provider, model_key, model)
         llm.research_cleared = True
-        notes.append(f"مدل تصمیم‌یار تأییدشده و بدون‌هزینه: {model}")
-    elif model_key:
         notes.append(
-            f"کلید «{model}» ذخیره شده است اما پژوهش ارسال نمی‌شود "
-            f"(وضعیت اتصال: {verification}). وجود کلید مجوز درخواست نیست."
+            f"مدل انتخاب‌شده ادمین «{model}» پژوهش را انجام می‌دهد. "
+            "رایگان یا پولی بودن مانع نیست. بودجه سرور اعمال می‌شود."
+        )
+    elif model_key and meta:
+        notes.append(
+            f"کلید «{model}» ذخیره شده اما وضعیت اتصال «{verification}» است. "
+            "پژوهش تا رفع همین خطا ارسال نمی‌شود. مدل دیگری جایگزین نشد."
         )
     elif not meta:
         notes.append(f"مدل «{model}» در فهرست محلی نیست و شناسه کاتالوگ معتبر فرض نمی‌شود")
     else:
-        notes.append(f"کلید نسخه «{model}» نیست — پژوهش مسدود است، نه جایگزین اکتشافی")
+        notes.append(f"کلید نسخه «{model}» نیست — پژوهش اجرا نمی‌شود و مسیر اکتشافی جایگزین نمی‌شود")
 
     return ProviderBundle(
         search=search,
