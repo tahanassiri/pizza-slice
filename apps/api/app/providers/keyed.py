@@ -138,6 +138,19 @@ class KeyedTavilySearch:
 
                 company = title.split("|")[0].split(" - ")[0].split(" – ")[0].strip()
                 company = company[:140] or host
+                # Prefer host brand when title is a generic page label
+                generic = {
+                    "about",
+                    "about us",
+                    "home",
+                    "homepage",
+                    "contact",
+                    "products",
+                    "services",
+                }
+                if company.lower() in generic or len(company) < 3:
+                    brand = host.split(".")[0].replace("-", " ").strip()
+                    company = (brand.title() if brand else host)[:140]
                 src = Source(
                     url=url,
                     title=title[:200],

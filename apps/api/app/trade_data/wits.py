@@ -6,6 +6,7 @@ Never mislabel aggregate totals as product-HS bilateral trade.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import httpx
@@ -159,13 +160,14 @@ class WitsTradeProvider:
     def _candidate_years(self, query: TradeDataQuery) -> list[int]:
         if query.years:
             return sorted(set(query.years), reverse=True)
-        # WITS often lags 2–4 years; try several recent complete years
+        # WITS often lags 2–4 years; prefer recent complete years first
         y = datetime.now(timezone.utc).year
-        return [y - 2, y - 3, y - 4, y - 1]
+        return [y - 2, y - 3, y - 4]
 
     def _fetch_one(
-        self, client: httpx.Client, reporter: str, year: int, product: str, indicator: str
-    ) -> tuple[float | None, str]:
+        self, reporter: str, year: int, product: str, indicator: str
+    ) -> tuple[str, float | None, str, bool]:
+        """Return (iso3, value, url, from_cache). Empty country rows are not breaker failures."""
         url = (
             f"{WITS_BASE}/reporter/{reporter}/year/{year}/partner/WLD"
             f"/product/{product}/indicator/{indicator}?format=JSON"
@@ -176,23 +178,28 @@ class WitsTradeProvider:
         )
         cached = self.cache.get(cache_key)
         if cached is not None:
-            return cached[0], url
+            return reporter, cached[0], url, True
 
         try:
-            r = client.get(url)
+            with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
+                r = client.get(url)
         except Exception:
             trade_breaker.record_failure(self.id)
-            return None, url
+            return reporter, None, url, False
+
+        if r.status_code >= 500:
+            trade_breaker.record_failure(self.id)
+            return reporter, None, url, False
 
         if r.status_code != 200:
-            trade_breaker.record_failure(self.id)
+            # Missing reporter/year/product is common — cache miss, don't trip breaker
             self.cache.set(cache_key, (None, url))
-            return None, url
+            return reporter, None, url, False
 
         value = _parse_observation(r.json())
         trade_breaker.record_success(self.id)
         self.cache.set(cache_key, (value, url))
-        return value, url
+        return reporter, value, url, False
 
     def fetch(self, query: TradeDataQuery) -> TradeDataResult:
         if not self.is_available():
@@ -223,21 +230,21 @@ class WitsTradeProvider:
         errors = 0
         year_used: int | None = None
 
-        with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
-            # Pick the newest year that returns data for a majority of reporters
-            for year in years:
-                year_records: list[TradeRecord] = []
-                year_sources: list[dict] = []
-                year_errors = 0
-                year_cache = False
-                for iso3 in reporters:
-                    cache_key = TtlCache.make_key(
-                        "wits", {"r": iso3, "y": year, "p": product, "i": indicator}
-                    )
-                    prior = self.cache.get(cache_key)
-                    if prior is not None:
+        # Parallel per-year reporter fetches (expanded destination pool)
+        for year in years:
+            year_records: list[TradeRecord] = []
+            year_sources: list[dict] = []
+            year_errors = 0
+            year_cache = False
+            with ThreadPoolExecutor(max_workers=min(10, max(4, len(reporters)))) as pool:
+                futures = [
+                    pool.submit(self._fetch_one, iso3, year, product, indicator)
+                    for iso3 in reporters
+                ]
+                for fut in as_completed(futures):
+                    iso3, value, url, from_cache = fut.result()
+                    if from_cache:
                         year_cache = True
-                    value, url = self._fetch_one(client, iso3, year, product, indicator)
                     if value is None:
                         year_errors += 1
                         continue
@@ -269,14 +276,14 @@ class WitsTradeProvider:
                             "reliability_note": product_label,
                         }
                     )
-                if year_records:
-                    records = year_records
-                    sources = year_sources
-                    errors = year_errors
-                    cache_hit = year_cache
-                    year_used = year
-                    break
-                errors += year_errors
+            if year_records:
+                records = year_records
+                sources = year_sources
+                errors = year_errors
+                cache_hit = year_cache
+                year_used = year
+                break
+            errors += year_errors
 
         if not records:
             return TradeDataResult(
