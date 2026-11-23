@@ -223,11 +223,21 @@ export interface LlmModelGroup {
   }[];
 }
 
+export interface TradeSourceStatus {
+  id: string;
+  name: string;
+  status: "active" | "inactive" | "failed" | "limited" | string;
+  optional?: boolean;
+  last_checked?: string;
+  note_fa?: string;
+}
+
 export interface AdminSettingsView {
   providers: ProviderConfig[];
   selected_model: string;
   llm_models?: LlmModelOption[];
   llm_groups?: LlmModelGroup[];
+  trade_sources?: TradeSourceStatus[];
   connection_message_fa: string;
   error_history: { at: string; message_fa: string }[];
   is_mock_ui: boolean;

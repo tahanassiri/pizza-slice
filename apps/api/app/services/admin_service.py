@@ -15,14 +15,24 @@ from app.schemas.contracts import (
     ProviderConfigOut,
     ProviderUpdateIn,
     TestConnectionOut,
+    TradeSourceStatusOut,
 )
 
 DEFAULT_PROVIDERS = [
     ("tavily", "Tavily", None, 50),
     ("exa", "Exa", None, 50),
-    ("comtrade", "UN Comtrade", None, None),
+    ("comtrade", "UN Comtrade (اختیاری)", None, None),
     ("gemini", "Gemini", "gemini-3.8-flash", None),
 ]
+
+_PROVIDER_NOTES = {
+    "comtrade": (
+        "کلید اجباری نیست. پیش‌فرض خاموش. با «فعال» می‌توان پیش‌نمایش عمومی "
+        "بدون کلید را امتحان کرد؛ برای رتبه‌بندی سراسری به تنهایی استفاده نمی‌شود."
+    ),
+    "tavily": "کلید اختیاری برای تحقیق تکمیلی بازار/خریدار.",
+    "exa": "کلید اختیاری — در صورت پیکربندی برای تحقیق استفاده می‌شود.",
+}
 
 LLM_KEY_PREFIX = "llm_model_key::"
 
@@ -39,6 +49,14 @@ def ensure_providers(db: Session) -> None:
     existing = {p.provider_id for p in db.scalars(select(ProviderSetting)).all()}
     for pid, name, model, limit in DEFAULT_PROVIDERS:
         if pid in existing:
+            # Keep Comtrade note/name current without forcing enable
+            if pid == "comtrade":
+                row = db.scalar(
+                    select(ProviderSetting).where(ProviderSetting.provider_id == "comtrade")
+                )
+                if row:
+                    row.name = name
+                    row.usage_note_fa = _PROVIDER_NOTES["comtrade"]
             continue
         db.add(
             ProviderSetting(
@@ -48,7 +66,7 @@ def ensure_providers(db: Session) -> None:
                 model=model,
                 encrypted_api_key=None,
                 status="untested",
-                usage_note_fa="کلید فقط سمت سرور ذخیره می‌شود",
+                usage_note_fa=_PROVIDER_NOTES.get(pid, "کلید فقط سمت سرور ذخیره می‌شود"),
                 daily_limit=limit,
                 used_today=0,
             )
@@ -57,6 +75,46 @@ def ensure_providers(db: Session) -> None:
     if not db.get(AppMeta, "selected_model"):
         db.add(AppMeta(key="selected_model", value=default))
     db.commit()
+
+
+def trade_sources_view(db: Session) -> list[TradeSourceStatusOut]:
+    """Status of TradeData providers for admin UI (no secrets)."""
+    ensure_providers(db)
+    now = datetime.now(timezone.utc).isoformat()
+    comtrade = db.scalar(
+        select(ProviderSetting).where(ProviderSetting.provider_id == "comtrade")
+    )
+    comtrade_on = bool(comtrade and comtrade.enabled)
+    tavily = db.scalar(
+        select(ProviderSetting).where(ProviderSetting.provider_id == "tavily")
+    )
+    research_active = bool(tavily and tavily.enabled and tavily.encrypted_api_key)
+    return [
+        TradeSourceStatusOut(
+            id="wits",
+            name="WITS Trade Stats",
+            status="active",
+            optional=False,
+            last_checked=now,
+            note_fa="منبع ساختاریافته پیش‌فرض — بدون کلید",
+        ),
+        TradeSourceStatusOut(
+            id="research",
+            name="Deep Research (Tavily/Wiki)",
+            status="active" if research_active else "limited",
+            optional=False,
+            last_checked=now,
+            note_fa="با کلید Tavily عمیق‌تر؛ بدون کلید از Wikipedia استفاده می‌شود",
+        ),
+        TradeSourceStatusOut(
+            id="comtrade",
+            name="UN Comtrade Public Preview",
+            status="active" if comtrade_on else "inactive",
+            optional=True,
+            last_checked=now,
+            note_fa="اختیاری و پیش‌فرض خاموش — کلید اجباری نیست",
+        ),
+    ]
 
 
 def get_selected_model(db: Session) -> str:
@@ -148,7 +206,11 @@ def settings_view(db: Session) -> AdminSettingsOut:
         selected_model=selected,
         llm_models=llm_models_view(db),
         llm_groups=catalog_grouped(),
-        connection_message_fa="کلید هر نسخه مدل جداگانه رمزنگاری می‌شود؛ فقط سمت سرور.",
+        trade_sources=trade_sources_view(db),
+        connection_message_fa=(
+            "کلید هر نسخه مدل جداگانه رمزنگاری می‌شود. "
+            "آمار تجارت از WITS است؛ کلید UN Comtrade اجباری نیست."
+        ),
         error_history=[
             {
                 "at": datetime.now(timezone.utc).isoformat(),
@@ -173,7 +235,8 @@ def update_provider(db: Session, provider_id: str, body: ProviderUpdateIn) -> Pr
     if body.api_key is not None:
         if body.api_key.strip() == "":
             row.encrypted_api_key = None
-            if body.enabled is None:
+            # Comtrade key is optional — clearing key must NOT force-disable public preview
+            if body.enabled is None and provider_id != "comtrade":
                 row.enabled = 0
         else:
             row.encrypted_api_key = encrypt_secret(body.api_key.strip())
@@ -253,6 +316,52 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
     row = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == provider_id))
     if not row:
         return TestConnectionOut(ok=False, message_fa="ارائه‌دهنده یافت نشد.")
+
+    # Comtrade: key never required — probe public preview when enabled or on demand
+    if provider_id == "comtrade":
+        try:
+            import httpx
+
+            with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+                r = client.get(
+                    "https://comtradeapi.un.org/public/v1/preview/C/A/HS",
+                    params={
+                        "reporterCode": 784,
+                        "period": 2022,
+                        "partnerCode": 0,
+                        "cmdCode": "TOTAL",
+                        "flowCode": "M",
+                        "maxRecords": 1,
+                    },
+                )
+            if r.status_code == 200:
+                row.status = "ok" if row.enabled else "limited"
+                db.commit()
+                return TestConnectionOut(
+                    ok=True,
+                    message_fa=(
+                        "پیش‌نمایش عمومی Comtrade در دسترس است. "
+                        + (
+                            "فعال است."
+                            if row.enabled
+                            else "فعلاً غیرفعال است (کلید لازم نیست — از پنل فعال کنید)."
+                        )
+                    ),
+                )
+            row.status = "error"
+            db.commit()
+            return TestConnectionOut(
+                ok=False,
+                message_fa=f"پیش‌نمایش Comtrade پاسخ نداد ({r.status_code}).",
+            )
+        except Exception as exc:
+            row.status = "error"
+            db.commit()
+            return TestConnectionOut(
+                ok=False,
+                message_fa=f"آزمون Comtrade ناموفق ({type(exc).__name__}).",
+            )
+
     if not row.encrypted_api_key:
         row.status = "error"
         db.commit()

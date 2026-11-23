@@ -158,6 +158,44 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
     }
   }
 
+  async function toggleProvider(providerId: string, enabled: boolean) {
+    setBusy(true);
+    try {
+      if (isMock) {
+        setProviders((prev) =>
+          prev.map((p) => (p.id === providerId ? { ...p, enabled } : p))
+        );
+        setMessage(
+          enabled
+            ? `ارائه‌دهنده نمایشی ${providerId} فعال شد.`
+            : `ارائه‌دهنده نمایشی ${providerId} غیرفعال شد.`
+        );
+        return;
+      }
+      const base = liveApiBase();
+      const res = await fetch(`${base}/api/admin/providers/${providerId}`, {
+        method: "PATCH",
+        headers: await authHeaders(),
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) throw new Error("fail");
+      const body = (await res.json()) as ProviderConfig;
+      setProviders((prev) => {
+        const others = prev.filter((p) => p.id !== providerId);
+        return [...others, body].sort((a, b) => a.name.localeCompare(b.name));
+      });
+      setMessage(
+        body.enabled
+          ? `${body.name} فعال شد (کلید برای Comtrade اجباری نیست).`
+          : `${body.name} غیرفعال شد.`
+      );
+    } catch {
+      setMessage(fa.error.generic);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveProviderKey(providerId: string, clear = false) {
     setBusy(true);
     try {
@@ -250,6 +288,35 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
         {isMock ? fa.admin.noRealKeys : fa.admin.researchProvidersHint}
       </p>
 
+      {settings.trade_sources?.length ? (
+        <section className="nova-panel min-w-0 space-y-3 overflow-hidden p-4 sm:p-5">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <h2 className="font-semibold text-white">{fa.admin.tradeSources}</h2>
+            <span className="text-[0.65rem] uppercase tracking-[0.14em] text-[var(--ink-muted)]">
+              sources
+            </span>
+          </div>
+          <p className="text-sm text-[var(--ink-muted)]">{fa.admin.tradeSourcesHint}</p>
+          <ul className="space-y-2">
+            {settings.trade_sources.map((s) => (
+              <li
+                key={s.id}
+                className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--line)] bg-black/25 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-white">{s.name}</p>
+                  <p className="text-xs text-[var(--ink-muted)]">{s.note_fa}</p>
+                </div>
+                <span className="text-xs font-semibold text-[var(--ink-soft)]" dir="ltr">
+                  {s.status}
+                  {s.optional ? " · optional" : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <section className="nova-panel min-w-0 space-y-3 overflow-hidden p-4 sm:p-5">
         <div className="mb-1 flex items-center justify-between gap-2">
           <h2 className="font-semibold text-white">{fa.admin.researchProviders}</h2>
@@ -267,7 +334,7 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
                 <div className="flex min-w-0 items-center gap-3">
                   <span
                     className={`h-2 w-2 shrink-0 rounded-full ${
-                      p.enabled && p.has_key_configured
+                      p.enabled || (p.id !== "comtrade" && p.has_key_configured)
                         ? "bg-[var(--accent)]"
                         : "bg-[var(--ink-muted)]"
                     }`}
@@ -277,6 +344,9 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
                     <p className="font-mono text-[0.65rem] text-[var(--ink-muted)]" dir="ltr">
                       {p.id}
                     </p>
+                    {p.usage_note_fa ? (
+                      <p className="mt-1 text-xs text-[var(--ink-muted)]">{p.usage_note_fa}</p>
+                    ) : null}
                   </div>
                 </div>
                 <span className="text-xs font-semibold text-[var(--ink-soft)]">
@@ -285,6 +355,8 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
                   {fa.providerStatus[p.status] ?? p.status}
                   {p.has_key_configured ? (
                     <span className="text-[var(--ok)]"> · key✓ ({fa.admin.keySaved})</span>
+                  ) : p.id === "comtrade" ? (
+                    " · no key required"
                   ) : (
                     " · —"
                   )}
@@ -310,6 +382,16 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
                 />
               </div>
               <div className="flex flex-wrap gap-2">
+                {p.id === "comtrade" ? (
+                  <button
+                    type="button"
+                    className="nova-btn-primary !px-4 !py-2 text-xs"
+                    disabled={busy}
+                    onClick={() => void toggleProvider(p.id, !p.enabled)}
+                  >
+                    {p.enabled ? fa.admin.disableProvider : fa.admin.enableProvider}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="nova-btn-primary !px-4 !py-2 text-xs"

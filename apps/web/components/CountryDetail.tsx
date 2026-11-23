@@ -30,6 +30,18 @@ export function CountryDetail({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <ConfidenceLabel level={market.confidence} />
+          {(() => {
+            const q = market.metrics.find((m) => m.key === "data_quality")?.value;
+            if (!q) return null;
+            return (
+              <span
+                className="rounded-lg border border-[var(--study-line)] px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-[var(--study-muted)]"
+                dir="ltr"
+              >
+                {q}
+              </span>
+            );
+          })()}
           {onSelect ? (
             <button
               type="button"

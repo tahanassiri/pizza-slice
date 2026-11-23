@@ -234,11 +234,21 @@ class LlmModelOptionOut(BaseModel):
     has_key_configured: bool = False
 
 
+class TradeSourceStatusOut(BaseModel):
+    id: str
+    name: str
+    status: str  # active | inactive | failed | limited
+    optional: bool = False
+    last_checked: str | None = None
+    note_fa: str | None = None
+
+
 class AdminSettingsOut(BaseModel):
     providers: list[ProviderConfigOut]
     selected_model: str
     llm_models: list[LlmModelOptionOut] = []
     llm_groups: list[dict] = []
+    trade_sources: list[TradeSourceStatusOut] = []
     connection_message_fa: str
     error_history: list[dict[str, str]]
     is_mock_ui: bool = False

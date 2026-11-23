@@ -65,13 +65,17 @@ def test_wiki_insufficient_for_markets():
     assert result.error_code == "INSUFFICIENT_EVIDENCE"
 
 
-def test_pipeline_auto_mode_with_mocked_wb(client, monkeypatch):
+def test_pipeline_auto_mode_with_mocked_wits(client, monkeypatch):
     monkeypatch.setenv("PROVIDER_MODE", "auto")
     from app.core.config import get_settings
 
     get_settings.cache_clear()
 
-    wb_sample = [{"page": 1}, [{"date": "2023", "value": 5_000_000.0}]]
+    wits_sample = {
+        "dataSets": [
+            {"series": {"0:0:0:0:0": {"observations": {"0": [5_000_000.0, 0]}}}}
+        ]
+    }
     wiki_sample = [
         "پسته",
         ["پسته"],
@@ -83,13 +87,14 @@ def test_pipeline_auto_mode_with_mocked_wb(client, monkeypatch):
         def __init__(self, payload):
             self.status_code = 200
             self._payload = payload
+            self.url = "https://wits.worldbank.org/mock"
 
         def json(self):
             return self._payload
 
     def fake_get(url, *args, **kwargs):
-        if "worldbank.org" in str(url):
-            return FakeResp(wb_sample)
+        if "wits.worldbank.org" in str(url):
+            return FakeResp(wits_sample)
         return FakeResp(wiki_sample)
 
     import time
@@ -119,3 +124,6 @@ def test_pipeline_auto_mode_with_mocked_wb(client, monkeypatch):
     assert len(snap["markets"]) == 3, snap["run"]
     assert snap["report"] is not None
     assert snap["report"]["is_mock"] is False
+    assert "WITS" in (snap["report"]["summary_fa"] or "") or any(
+        m.get("key") == "data_quality" for m in snap["markets"][0]["metrics"]
+    )

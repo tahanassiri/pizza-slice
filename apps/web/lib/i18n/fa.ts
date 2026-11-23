@@ -215,8 +215,13 @@ export const fa = {
     clearProviderKey: "پاک کردن کلید",
     researchProviders: "ارائه‌دهندگان تحقیق",
     researchProvidersHint:
-      "کلید Tavily، Exa و UN Comtrade جداگانه رمزنگاری و فقط سمت سرور ذخیره می‌شود.",
-    providerKeyPlaceholder: "کلید API را بچسبانید…",
+      "کلید Tavily و Exa اختیاری است. UN Comtrade کلید اجباری ندارد و پیش‌فرض خاموش است.",
+    tradeSources: "منابع آمار تجارت",
+    tradeSourcesHint:
+      "ترتیب بازیابی: WITS → تحقیق موجود → Comtrade اختیاری. عدد ساختگی تولید نمی‌شود.",
+    enableProvider: "فعال‌سازی",
+    disableProvider: "غیرفعال‌سازی",
+    providerKeyPlaceholder: "کلید API را بچسبانید… (برای Comtrade اختیاری)",
     usage: "مصرف",
     errors: "تاریخچه خطا",
     enabled: "فعال",

@@ -478,11 +478,11 @@ export const adminMockSettings = {
     },
     {
       id: "comtrade",
-      name: "UN Comtrade",
+      name: "UN Comtrade (اختیاری)",
       enabled: false,
       has_key_configured: false,
       status: "untested" as const,
-      usage_note_fa: "در فاز A متصل نیست",
+      usage_note_fa: "کلید اجباری نیست — پیش‌فرض خاموش",
     },
     {
       id: "gemini",
@@ -569,6 +569,29 @@ export const adminMockSettings = {
           is_flash: true,
         },
       ],
+    },
+  ],
+  trade_sources: [
+    {
+      id: "wits",
+      name: "WITS Trade Stats",
+      status: "active",
+      optional: false,
+      note_fa: "منبع ساختاریافته پیش‌فرض — بدون کلید",
+    },
+    {
+      id: "research",
+      name: "Deep Research (Tavily/Wiki)",
+      status: "limited",
+      optional: false,
+      note_fa: "نمایشی",
+    },
+    {
+      id: "comtrade",
+      name: "UN Comtrade Public Preview",
+      status: "inactive",
+      optional: true,
+      note_fa: "اختیاری و پیش‌فرض خاموش",
     },
   ],
   connection_message_fa: "آزمون اتصال نمایشی — بدون درخواست واقعی",

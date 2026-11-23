@@ -13,10 +13,10 @@ from app.db.session import SessionLocal
 from app.events.broadcaster import broadcaster
 from app.events.store import append_event
 from app.models.entities import Run
-from app.providers.free_worldbank import FreeWorldBankTradeProvider
 from app.providers.registry import resolve_providers
 from app.schemas.contracts import Report, RunEventOut, Source
 from app.services.feasibility_calc import default_feasibility_template
+from app.trade_data.adapter import TradeDataProviderAdapter
 
 
 def _iso(dt: datetime) -> str:
@@ -120,55 +120,27 @@ async def run_pipeline(run_id: str) -> None:
         await _emit(
             db,
             run,
-            phase="search",
-            status="running",
-            message_fa="جست‌وجوی منابع بازار",
-        )
-        market_result = None
-        extra_sources: list[Source] = []
-
-        # Prefer free World Bank ranked markets when trade provider supports it
-        if isinstance(trade, FreeWorldBankTradeProvider):
-            market_result = trade.build_markets(run.product, run.origin_country)
-        elif hasattr(search, "search_markets"):
-            market_result = search.search_markets(run.product, run.origin_country)
-
-        # Optional keyed/wiki search for supplementary sources
-        if hasattr(search, "search_product_context"):
-            ctx = search.search_product_context(run.product)
-            extra_sources = list(ctx.sources or [])
-        elif hasattr(search, "search_markets") and not isinstance(trade, FreeWorldBankTradeProvider):
-            pass
-        elif hasattr(search, "search_markets") and market_result is not None:
-            # Tavily etc. — collect sources only
-            try:
-                supp = search.search_markets(run.product, run.origin_country)
-                extra_sources = list(supp.sources or [])
-            except Exception:
-                pass
-
-        if market_result is None:
-            market_result = search.search_markets(run.product, run.origin_country)
-
-        await _emit(
-            db,
-            run,
-            phase="search",
-            status="completed" if market_result.ok else "partial",
-            message_fa=market_result.message_fa,
-            source_refs=_merge_sources(market_result.sources, extra_sources),
-            error_code=None if market_result.ok else market_result.error_code,
-            payload={"markets_found": len(market_result.markets or [])},
-        )
-
-        await _emit(
-            db,
-            run,
             phase="trade_stats",
             status="running",
-            message_fa="دریافت آمار تجارت",
+            message_fa="بازیابی داده تجارت (WITS → تحقیق → منابع اختیاری)",
         )
-        trade_result = trade.trade_stats(run.product, run.origin_country)
+
+        extra_sources: list[Source] = []
+        # TradeDataService path — market modules never call Comtrade/WITS directly
+        if isinstance(trade, TradeDataProviderAdapter):
+            trade_result = trade.trade_stats(
+                run.product, run.origin_country, hs_code=run.guessed_hs_code
+            )
+            market_result = trade.build_markets(
+                run.product, run.origin_country, hs_code=run.guessed_hs_code
+            )
+        else:
+            trade_result = trade.trade_stats(run.product, run.origin_country)
+            if hasattr(trade, "build_markets"):
+                market_result = trade.build_markets(run.product, run.origin_country)
+            else:
+                market_result = search.search_markets(run.product, run.origin_country)
+
         await _emit(
             db,
             run,
@@ -177,6 +149,47 @@ async def run_pipeline(run_id: str) -> None:
             message_fa=trade_result.message_fa,
             source_refs=trade_result.sources,
             error_code=None if trade_result.ok else trade_result.error_code,
+            payload={
+                "quality_status": (trade_result.meta or {}).get("quality_status"),
+                "cache_hit": (trade_result.meta or {}).get("cache_hit"),
+                "warnings": (trade_result.meta or {}).get("warnings"),
+            },
+        )
+
+        await _emit(
+            db,
+            run,
+            phase="search",
+            status="running",
+            message_fa="تحقیق تکمیلی و اعتبارسنجی منابع",
+        )
+        if hasattr(search, "search_product_context"):
+            try:
+                ctx = search.search_product_context(run.product)
+                extra_sources = list(ctx.sources or [])
+            except Exception:
+                pass
+        elif hasattr(search, "search_markets"):
+            try:
+                supp = search.search_markets(run.product, run.origin_country)
+                extra_sources = list(supp.sources or [])
+            except Exception:
+                pass
+
+        await _emit(
+            db,
+            run,
+            phase="search",
+            status="completed" if market_result.ok or extra_sources else "partial",
+            message_fa=market_result.message_fa
+            if market_result.ok
+            else (market_result.message_fa or "تحقیق تکمیلی بدون عدد قطعی"),
+            source_refs=_merge_sources(market_result.sources, extra_sources),
+            error_code=None if market_result.ok else market_result.error_code,
+            payload={
+                "markets_found": len(market_result.markets or []),
+                "quality_status": (market_result.meta or {}).get("quality_status"),
+            },
         )
 
         await _emit(
@@ -184,7 +197,7 @@ async def run_pipeline(run_id: str) -> None:
             run,
             phase="market_compare",
             status="running",
-            message_fa="مقایسه بازارهای کاندید",
+            message_fa="تحلیل و مقایسه بازارهای کاندید",
         )
 
         markets = market_result.markets or []
@@ -196,6 +209,9 @@ async def run_pipeline(run_id: str) -> None:
         all_sources = _merge_sources(
             market_result.sources, trade_result.sources, extra_sources
         )
+        quality = (market_result.meta or {}).get("quality_status") or (
+            trade_result.meta or {}
+        ).get("quality_status")
 
         if not markets:
             await _emit(
@@ -212,13 +228,24 @@ async def run_pipeline(run_id: str) -> None:
                 run_id=run.id,
                 product=run.product,
                 origin_country=run.origin_country,
-                summary_fa="در این اجرا شواهد کافی برای رتبه‌بندی بازار به‌دست نیامد.",
+                summary_fa=(
+                    "در این اجرا شواهد کافی برای رتبه‌بندی بازار به‌دست نیامد "
+                    f"(وضعیت داده: {quality or 'unavailable'}). "
+                    "خریدار و امکان‌سنجی همچنان در دسترس‌اند؛ عدد ساختگی تولید نشد."
+                ),
                 markets=[],
                 selected_country=None,
                 buyers=[],
                 feasibility=feas,
-                risks_fa=["نبود داده تجاری کافی", "نیاز به کلید/ارائه‌دهنده تخصصی برای عمق بیشتر"],
-                assumptions_fa=["بدون جعل آمار یا خریدار", "محاسبه مالی فقط پس از ورود اعداد کاربر"],
+                risks_fa=[
+                    "نبود داده تجاری کافی",
+                    "Comtrade کلید اجباری نیست — در صورت نیاز فقط به‌صورت اختیاری فعال شود",
+                ],
+                assumptions_fa=[
+                    "بدون جعل آمار یا خریدار",
+                    "محاسبه مالی فقط پس از ورود اعداد کاربر",
+                    f"کیفیت داده تجارت: {quality or 'unavailable'}",
+                ],
                 sources=all_sources,
                 collected_at=_iso(datetime.now(timezone.utc)),
                 is_mock=False,
@@ -248,24 +275,30 @@ async def run_pipeline(run_id: str) -> None:
         )
         feas = default_feasibility_template()
         run.feasibility_json = feas.model_dump_json()
+        src_name = (market_result.meta or {}).get("source_name") or "TradeData"
+        ref_year = (market_result.meta or {}).get("reference_year")
         report = Report(
             run_id=run.id,
             product=run.product,
             origin_country=run.origin_country,
             summary_fa=(
-                f"حداکثر سه بازار کاندید برای «{run.product}» با منابع پیوست. "
-                "اطمینان کلی پایین است مگر داده HS اختصاصی اضافه شود."
+                f"حداکثر سه بازار کاندید برای «{run.product}» از {src_name}"
+                + (f" (سال مرجع {ref_year})" if ref_year else "")
+                + f". کیفیت داده: {quality or 'partial'}."
             ),
             markets=markets,
             buyers=[],
             feasibility=feas,
             risks_fa=[
-                "داده کلان ممکن است با تقاضای محصول‌محور هم‌خوان نباشد",
+                "داده گروهی/کل ممکن است با تقاضای محصول‌محور HS هم‌خوان نباشد",
                 "خریدار بالقوه هنوز جست‌وجو/تأیید نشده",
+                *list((market_result.meta or {}).get("warnings") or [])[:2],
             ],
             assumptions_fa=[
                 "مبدأ پیش‌فرض ایران مگر خلاف آن ثبت شود",
-                "رتبه‌بندی اولیه بر شاخص واردات کلان World Bank است مگر ارائه‌دهنده دیگر فعال باشد",
+                "مسیر داده: WITS → تحقیق موجود → Comtrade اختیاری (بدون کلید اجباری)",
+                f"کیفیت داده تجارت: {quality or 'partial'}",
+                f"HS: {run.guessed_hs_code or 'نامشخص'}",
             ],
             sources=all_sources,
             collected_at=_iso(datetime.now(timezone.utc)),
