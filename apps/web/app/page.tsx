@@ -24,21 +24,21 @@ export default function HomePage() {
             </div>
           ) : null}
 
-          <p className="font-display text-5xl font-bold tracking-tight text-white sm:text-6xl md:text-7xl">
+          <p className="font-display text-5xl font-black tracking-tight text-white sm:text-6xl md:text-7xl">
             {fa.brand}
           </p>
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-[var(--mock)]">
             {fa.brandSubtitle}
           </p>
-          <h1 className="max-w-xl text-2xl font-semibold leading-snug text-white sm:text-3xl">
+          <h1 className="max-w-xl text-2xl font-bold leading-snug text-white sm:text-3xl">
             {fa.home.headline}
           </h1>
-          <p className="max-w-lg text-sm leading-7 text-[var(--ink-muted)] sm:text-base">
+          <p className="nova-caption max-w-lg text-sm leading-7 text-[var(--ink-muted)] sm:text-base">
             {fa.home.support}
           </p>
 
           <div>
-            <p className="mb-2 text-xs text-[var(--ink-muted)]">{fa.home.pathLabel}</p>
+            <p className="nova-caption mb-2 text-xs text-[var(--ink-muted)]">{fa.home.pathLabel}</p>
             <ol className="flex flex-wrap gap-2">
               {fa.home.pathSteps.map((step, i) => (
                 <li

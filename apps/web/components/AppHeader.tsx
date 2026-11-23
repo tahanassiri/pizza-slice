@@ -6,10 +6,10 @@ export function AppHeader() {
     <header className="no-print border-b border-[var(--line)] bg-[#0b1426]/80 backdrop-blur-md">
       <div className="nova-container flex h-14 items-center justify-between">
         <Link href="/" className="flex items-baseline gap-2">
-          <span className="font-display text-xl font-bold tracking-tight text-white">
+          <span className="font-display text-xl font-extrabold tracking-tight text-white">
             {fa.brand}
           </span>
-          <span className="hidden text-sm text-[var(--ink-muted)] sm:inline">
+          <span className="nova-caption hidden text-sm text-[var(--ink-muted)] sm:inline">
             {fa.brandSubtitle}
           </span>
         </Link>

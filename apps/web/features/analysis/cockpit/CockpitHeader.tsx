@@ -10,7 +10,7 @@ export function CockpitHeader({ run }: { run: Run }) {
         <div className="flex flex-wrap items-center gap-2">
           <Link
             href="/"
-            className="font-display text-xl font-bold tracking-tight text-white sm:text-2xl"
+            className="font-display text-xl font-extrabold tracking-tight text-white sm:text-2xl"
           >
             {fa.brand}
           </Link>

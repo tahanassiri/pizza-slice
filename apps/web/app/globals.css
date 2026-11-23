@@ -23,8 +23,10 @@
   --mock-soft: rgba(230, 183, 101, 0.14);
   --radius: 14px;
   --shadow-soft: 0 18px 50px rgba(0, 0, 0, 0.28);
-  --font-sans: var(--font-vazirmatn), "Vazirmatn", Tahoma, sans-serif;
-  --font-display: var(--font-syne), var(--font-vazirmatn), sans-serif;
+  /* Dastkhat FaNum — UI body/headings; Mono only for codes */
+  --font-sans: var(--font-dastkhat), "Dastkhat FaNum", Tahoma, sans-serif;
+  --font-display: var(--font-dastkhat), "Dastkhat FaNum", Tahoma, sans-serif;
+  --font-mono: var(--font-dastkhat-mono), "Dastkhat Mono", ui-monospace, Menlo, Consolas, monospace;
   /* study surface (reports / dense forms inside cockpit) */
   --study-ink: #0c1b2a;
   --study-muted: #4a6275;
@@ -40,8 +42,24 @@ body {
   color: var(--ink);
   background: var(--paper);
   font-family: var(--font-sans);
+  font-weight: 400;
   min-height: 100vh;
   text-rendering: optimizeLegibility;
+}
+
+/* Display family (weight via Tailwind font-bold / font-extrabold / font-black) */
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+.nova-caption {
+  font-weight: 300;
+  letter-spacing: 0.02em;
+}
+
+.nova-emphasis {
+  font-weight: 500;
 }
 
 body::before {
