@@ -21,14 +21,14 @@ DEFAULT_PROVIDERS = [
     ("tavily", "Tavily", None, 50),
     ("exa", "Exa", None, 50),
     ("comtrade", "UN Comtrade", None, None),
-    ("gemini", "Gemini", "gemini-2.0-flash", None),
+    ("gemini", "Gemini", "gemini-3.8-flash", None),
 ]
 
 LLM_KEY_PREFIX = "llm_model_key::"
 
 
 def _default_model() -> str:
-    return (get_settings().default_llm_model or "gemini-2.0-flash").strip()
+    return (get_settings().default_llm_model or "gemini-3.8-flash").strip()
 
 
 def _model_key_meta(model_id: str) -> str:
@@ -62,9 +62,16 @@ def ensure_providers(db: Session) -> None:
 def get_selected_model(db: Session) -> str:
     ensure_providers(db)
     selected = db.get(AppMeta, "selected_model")
+    default = _default_model()
     if selected and selected.value.strip():
-        return selected.value.strip()
-    return _default_model()
+        mid = selected.value.strip()
+        # If DB still points at a removed/outdated id, remapped to current default
+        if mid in models_by_id():
+            return mid
+        selected.value = default
+        db.commit()
+        return default
+    return default
 
 
 def get_model_api_key(db: Session, model_id: str) -> str | None:

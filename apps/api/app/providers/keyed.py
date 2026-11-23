@@ -160,7 +160,7 @@ _HS_PROMPT = (
 class KeyedGeminiLLM:
     id = "gemini"
 
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash", timeout: float = 20.0):
+    def __init__(self, api_key: str, model: str = "gemini-3.8-flash", timeout: float = 20.0):
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
