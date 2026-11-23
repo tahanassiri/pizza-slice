@@ -49,12 +49,17 @@ _HS_PROMPT = (
     "Return ONLY a 6-digit HS code guess for this product, or UNKNOWN. Product: {product}"
 )
 
+# A single float on httpx.Client applies to the read timeout. gemini-4-hydrogen
+# generateContent exceeded 20s on both HS classify and the research decision
+# (ReadTimeout after an HTTP 503). 120s covers a normal generateContent.
+GEMINI_GENERATE_TIMEOUT = 120.0
+
 
 class KeyedGeminiLLM:
     id = "gemini"
     research_cleared = False
 
-    def __init__(self, api_key: str, model: str = "gemini-3.8-flash", timeout: float = 20.0):
+    def __init__(self, api_key: str, model: str = "gemini-3.8-flash", timeout: float = GEMINI_GENERATE_TIMEOUT):
         self.api_key = api_key
         self.model = model
         self.timeout = timeout

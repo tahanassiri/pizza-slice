@@ -6,6 +6,8 @@ import json
 import time
 from unittest.mock import patch
 
+from app.providers.keyed import GEMINI_GENERATE_TIMEOUT, build_llm
+
 CONCLUDE = json.dumps(
     {
         "action": "conclude",
@@ -44,6 +46,22 @@ def _wait_report(client, run_id: str) -> dict:
             return snap
         time.sleep(0.05)
     raise AssertionError(f"report missing: {snap}")
+
+
+def test_gemini_generate_content_waits_longer_than_twenty_seconds():
+    """The live hydrogen call ReadTimeout'd at the old 20s client timeout."""
+
+    assert GEMINI_GENERATE_TIMEOUT == 120.0
+    llm = build_llm("google", "not-a-live-key", "gemini-4-hydrogen")
+    assert llm.timeout == 120.0
+    with patch("app.providers.keyed.httpx.Client") as client_cls:
+        post = client_cls.return_value.__enter__.return_value.post
+        post.return_value = _gemini_ok()
+        llm.classify_hs("زعفران", None)
+        llm.decide_research_action({"product": "زعفران"})
+    assert client_cls.call_count == 2
+    for call in client_cls.call_args_list:
+        assert call.kwargs["timeout"] == 120.0
 
 
 def test_selected_gemini_is_called_without_a_no_cost_gate(client, admin_token, monkeypatch):
