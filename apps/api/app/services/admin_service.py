@@ -328,23 +328,30 @@ def _write_model_verification(db: Session, model_id: str, status: str, *, detail
     db.commit()
 
 
-def _connection_message(model_id: str, status: str, *, http_status: int | None) -> str:
-    http = f"HTTP {http_status}" if http_status is not None else "بدون پاسخ HTTP"
-    labels = {
-        "Verified": (
+def _connection_message(
+    model_id: str,
+    status: str,
+    *,
+    http_status: int | None,
+    body: str = "",
+    error: str | None = None,
+) -> str:
+    if status == "Verified":
+        http = f"HTTP {http_status}" if http_status is not None else "بدون پاسخ HTTP"
+        return (
             f"Verified — اتصال «{model_id}» برقرار شد ({http}). "
             "هزینهٔ احتمالی داخل بودجه سرور مجاز است."
-        ),
-        "Billing problem": (
-            f"Billing problem — «{model_id}» مشکل صورتحساب برگرداند ({http}). "
-            "اتصال و صورتحساب جدا ثبت شدند. مدل دیگری جایگزین نشد."
-        ),
-        "Rate-limited": f"Rate-limited — سهمیه یا نرخ «{model_id}» محدود است ({http}).",
-        "Unavailable": f"Unavailable — مدل «{model_id}» در نقطهٔ پایانی در دسترس نیست ({http}). شناسه کاتالوگ معتبر فرض نشد.",
-        "Failed": f"Failed — آزمون اتصال «{model_id}» ناموفق بود ({http}).",
-        "Configured": f"Configured — کلید «{model_id}» ذخیره شده و هنوز آزمون زنده نشده است.",
-    }
-    return labels.get(status, f"{status} — {http}")
+        )
+    if status == "Configured":
+        return f"Configured — کلید «{model_id}» ذخیره شده و هنوز آزمون زنده نشده است."
+    from app.providers.model_clearance import describe_provider_failure
+
+    return describe_provider_failure(
+        model_id=model_id,
+        http_status=http_status,
+        body=body,
+        error=error,
+    )
 
 
 def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
@@ -385,7 +392,13 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
             checked=True,
             connection_status=status,
             billing_status=billing_status_for(status),
-            message_fa=_connection_message(model_id, status, http_status=probe.get("http_status")),
+            message_fa=_connection_message(
+                model_id,
+                status,
+                http_status=probe.get("http_status"),
+                body=str(probe.get("body") or ""),
+                error=probe.get("error"),
+            ),
         )
 
     row = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == provider_id))

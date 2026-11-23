@@ -247,7 +247,7 @@ async def run_agentic_pipeline(run_id: str) -> None:
             run.status = "partial"
             run.phase = "report"
             run.error_code = stop if blocked else "INSUFFICIENT_EVIDENCE"
-            run.error_message_fa = "پژوهش مسدود است" if blocked else "شواهد کافی نیست"
+            run.error_message_fa = (notes or "پژوهش مسدود است") if blocked else "شواهد کافی نیست"
             run.error_retryable = 1
             db.commit()
             await _emit(

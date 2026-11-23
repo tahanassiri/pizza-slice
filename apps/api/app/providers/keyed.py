@@ -6,6 +6,7 @@ This module does not log keys.
 from __future__ import annotations
 
 import re
+import time
 
 import httpx
 
@@ -26,6 +27,11 @@ def _redact(text: str) -> str:
     return _SECRET.sub("[redacted]", text or "")[:180]
 
 
+# One extra attempt only when the provider sends Retry-After of at most 5s.
+# The observed 503 (high demand, ~4s, no Retry-After) is not retried.
+_RETRY_AFTER_CAP_S = 5.0
+
+
 def _status_for(http_status: int, body: str) -> str:
     from app.providers.model_clearance import classify_probe
 
@@ -35,6 +41,41 @@ def _status_for(http_status: int, body: str) -> str:
         http_status=http_status,
         body=_redact(body),
         error=None,
+    )
+
+
+def _retry_after_seconds(response: object) -> float | None:
+    headers = getattr(response, "headers", None) or {}
+    getter = getattr(headers, "get", None)
+    if getter is None:
+        return None
+    raw = getter("Retry-After")
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        seconds = float(str(raw).strip())
+    except ValueError:
+        return None
+    if seconds < 0 or seconds > _RETRY_AFTER_CAP_S:
+        return None
+    return seconds
+
+
+def _failure(model_id: str, *, http_status: int | None, body: str = "", error: str | None = None) -> ModelCallError:
+    from app.providers.model_clearance import describe_provider_failure
+
+    status = "Failed" if error or http_status is None else _status_for(http_status, body)
+    if error and http_status is not None:
+        status = _status_for(http_status, body)
+    return ModelCallError(
+        status=status,
+        http_status=http_status,
+        message_fa=describe_provider_failure(
+            model_id=model_id,
+            http_status=http_status,
+            body=_redact(body),
+            error=error,
+        ),
     )
 
 
@@ -64,26 +105,35 @@ class KeyedGeminiLLM:
         self.model = model
         self.timeout = timeout
 
-    def _generate(self, prompt: str, *, max_tokens: int = 1024) -> str:
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.model}:generateContent"
+    def _post(self, client: httpx.Client, prompt: str, max_tokens: int) -> httpx.Response:
+        return client.post(
+            (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{self.model}:generateContent"
+            ),
+            headers={"x-goog-api-key": self.api_key},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens},
+            },
         )
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(
-                url,
-                headers={"x-goog-api-key": self.api_key},
-                json={
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens},
-                },
-            )
+
+    def _generate(self, prompt: str, *, max_tokens: int = 1024) -> str:
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = self._post(client, prompt, max_tokens)
+                # Honor a short Retry-After once. A 503 without that header is not retried.
+                if response.status_code in {429, 503}:
+                    wait = _retry_after_seconds(response)
+                    if wait is not None:
+                        time.sleep(wait)
+                        response = self._post(client, prompt, max_tokens)
+        except httpx.TimeoutException as exc:
+            raise _failure(self.model, http_status=None, error=type(exc).__name__) from exc
+        except httpx.HTTPError as exc:
+            raise _failure(self.model, http_status=None, error=type(exc).__name__) from exc
         if response.status_code != 200:
-            raise ModelCallError(
-                status=_status_for(response.status_code, response.text),
-                http_status=response.status_code,
-                message_fa=f"{_status_for(response.status_code, response.text)} — HTTP {response.status_code}. {_redact(response.text)}",
-            )
+            raise _failure(self.model, http_status=response.status_code, body=response.text)
         return (
             response.json()
             .get("candidates", [{}])[0]
@@ -133,23 +183,24 @@ class KeyedOpenAICompatLLM:
         self.timeout = timeout
 
     def _chat(self, prompt: str, *, max_tokens: int = 1024, temperature: float = 0) -> str:
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
-            )
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    },
+                )
+        except httpx.TimeoutException as exc:
+            raise _failure(self.model, http_status=None, error=type(exc).__name__) from exc
+        except httpx.HTTPError as exc:
+            raise _failure(self.model, http_status=None, error=type(exc).__name__) from exc
         if response.status_code != 200:
-            raise ModelCallError(
-                status=_status_for(response.status_code, response.text),
-                http_status=response.status_code,
-                message_fa=f"{_status_for(response.status_code, response.text)} — HTTP {response.status_code}. {_redact(response.text)}",
-            )
+            raise _failure(self.model, http_status=response.status_code, body=response.text)
         return (response.json().get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
 
     def classify_hs(self, product: str, hs_hint: str | None) -> tuple[str | None, str]:
