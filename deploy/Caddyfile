@@ -1,4 +1,22 @@
+# Primary: automatic HTTPS for magical.net44.ir
+magical.net44.ir {
+  encode gzip
+
+  handle /api/* {
+    reverse_proxy api:8000
+  }
+  handle /health {
+    reverse_proxy api:8000
+  }
+  handle {
+    reverse_proxy web:3000
+  }
+}
+
+# Keep raw IP / HTTP access on :80 (no TLS challenge on IP alone)
 :80 {
+  encode gzip
+
   handle /api/* {
     reverse_proxy api:8000
   }
