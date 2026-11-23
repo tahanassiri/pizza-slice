@@ -13,9 +13,10 @@ magical.net44.ir {
 	}
 }
 
-# Keep raw-IP HTTP access (no TLS on bare IP). Do not use a blanket :80
-# site — that would steal ACME HTTP-01 challenges for the hostname above.
-http://167.104.219.24 {
+# Keep raw-IP / loopback HTTP access (no TLS on bare IP).
+# Do not use a blanket `:80` site — that would steal ACME HTTP-01
+# challenges for the hostname above.
+http://167.104.219.24, http://localhost, http://127.0.0.1 {
 	encode gzip
 
 	handle /api/* {
