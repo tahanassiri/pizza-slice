@@ -129,13 +129,18 @@ function AnalysisRun({ runId, initialTab }: AnalysisShellProps) {
         if (cancelled) return;
         const msg = e instanceof Error ? e.message : "";
         const notFound = msg.startsWith("RUN_NOT_FOUND");
+        if (notFound) {
+          latestSnapshot.current = null;
+          setSnap(null);
+          setConnectionLost(false);
+        }
         if (!latestSnapshot.current) {
           setError(
             notFound
               ? live
                 ? "اجرا یافت نشد. از صفحه خانه یک تحلیل جدید بسازید."
                 : "این تحلیل در حافظه جلسه نیست. از صفحه خانه یک اجرای آزمایشی جدید بسازید."
-              : fa.error.generic
+              : msg === "RUN_REQUEST_TIMEOUT" ? fa.error.statusTimeout : fa.error.generic
           );
         }
         if (live && !notFound) {
@@ -161,15 +166,25 @@ function AnalysisRun({ runId, initialTab }: AnalysisShellProps) {
     };
   }, [acceptSnapshot, live, runId]);
 
+  const analysisInProgress = live && !!snap
+    && !["failed", "cancelled", "rate_limited", "provider_unavailable"].includes(snap.run.status)
+    && !(snap.report && snap.events.at(-1)?.phase === "report");
+
   useRunEvents(runId, {
-    enabled: live && !!snap,
+    enabled: analysisInProgress,
     lastEventId: snap?.last_event_id,
     onEvent: () => load(),
     onConnectionChange: (ok) => {
       setConnectionLost(!ok);
-      if (ok) load();
+      load();
     },
   });
+
+  useEffect(() => {
+    if (!analysisInProgress) return;
+    const timer = window.setInterval(() => load(), connectionLost ? 2500 : 5000);
+    return () => window.clearInterval(timer);
+  }, [analysisInProgress, connectionLost, load]);
 
   const buyerStatus = snap?.buyer_search?.status;
   const buyerPending = buyerStatus === "queued" || buyerStatus === "running";
@@ -259,7 +274,8 @@ function AnalysisRun({ runId, initialTab }: AnalysisShellProps) {
     return (
       <div className="cockpit-shell mx-auto flex max-w-lg items-center justify-center py-10">
         <LoadingState
-          label={fa.loading.pleaseWait}
+          label={fa.loading.checkingAnalysis}
+          hint={fa.loading.analysisRegistered}
           stages={[
             fa.loading.stages.prepare,
             fa.loading.stages.fetch,
@@ -299,10 +315,11 @@ function AnalysisRun({ runId, initialTab }: AnalysisShellProps) {
     <div className="cockpit-shell mx-auto w-full min-w-0 max-w-6xl">
       <CockpitHeader run={run} />
 
-      {connectionLost ? (
+      {connectionLost && (!live || analysisInProgress) ? (
         <ConnectionBanner
           onRetry={() => void load({ showSpinner: true })}
-          onClear={() => setConnectionLost(false)}
+          onClear={live ? undefined : () => setConnectionLost(false)}
+          checkingStatus={live}
         />
       ) : null}
 

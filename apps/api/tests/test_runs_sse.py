@@ -2,11 +2,36 @@ from __future__ import annotations
 
 import asyncio
 import time
+from threading import Event
 
 import pytest
 
 from app.db.session import SessionLocal
 from app.events.store import list_events
+from app.providers.stubs import StubLLMProvider
+
+
+def test_status_shows_classification_while_provider_is_working(client, monkeypatch):
+    entered = Event()
+    released = Event()
+    classify = StubLLMProvider.classify_hs
+
+    def delayed_classification(self, product, hs_hint):
+        entered.set()
+        released.wait(timeout=5)
+        return classify(self, product, hs_hint)
+
+    monkeypatch.setattr(StubLLMProvider, "classify_hs", delayed_classification)
+    run_id = client.post("/api/runs", json={"product": "sample coated paper"}).json()["run_id"]
+    try:
+        assert entered.wait(timeout=3)
+        snap = client.get(f"/api/runs/{run_id}").json()
+        assert snap["run"]["phase"] == "product_classify"
+        assert snap["run"]["status"] == "running"
+        assert snap["events"][-1]["status"] == "running"
+    finally:
+        released.set()
+        _wait_pipeline(client, run_id)
 from app.services import orchestrator, runs
 
 

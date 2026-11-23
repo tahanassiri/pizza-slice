@@ -6,7 +6,7 @@ export default function RootLoading() {
   return (
     <div className="mx-auto max-w-lg py-10">
       <LoadingState
-        label={fa.loading.pleaseWait}
+        label={fa.loading.openingPage}
         stages={[
           fa.loading.stages.prepare,
           fa.loading.stages.fetch,

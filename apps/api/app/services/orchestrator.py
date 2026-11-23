@@ -35,7 +35,8 @@ def _eid() -> str:
 async def _emit(db: Session, run: Run, **kwargs) -> RunEventOut:
     event = append_event(db, run_id=run.id, event_id=_eid(), **kwargs)
     run.phase = kwargs["phase"]
-    run.status = kwargs["status"]
+    status = kwargs["status"]
+    run.status = "running" if run.phase != "report" and status in {"completed", "partial"} else status
     run.updated_at = datetime.now(timezone.utc)
     if kwargs.get("error_code"):
         run.error_code = kwargs["error_code"]
@@ -102,29 +103,28 @@ async def run_pipeline(run_id: str) -> None:
             message_fa="ورود درخواست تکمیل شد",
         )
 
-        hs, hs_conf = llm.classify_hs(run.product, run.guessed_hs_code)
-        run.guessed_hs_code = hs
-        run.hs_confidence = hs_conf
-        db.commit()
-
         await _emit(
             db,
             run,
             phase="product_classify",
             status="running",
+            message_fa="در حال شناسایی محصول و تعیین کد HS",
+        )
+
+        hs, hs_conf = llm.classify_hs(run.product, run.guessed_hs_code)
+        run.guessed_hs_code = hs
+        run.hs_confidence = hs_conf
+        await _emit(
+            db,
+            run,
+            phase="product_classify",
+            status="completed",
             message_fa=(
                 f"طبقه‌بندی محصول: HS قطعی ثبت نشد (اطمینان {hs_conf})"
                 if not hs
                 else f"کد HS پیشنهادی کاربر/سیستم: {hs} (اطمینان {hs_conf})"
             ),
             payload={"guessed_hs_code": hs, "hs_confidence": hs_conf},
-        )
-        await _emit(
-            db,
-            run,
-            phase="product_classify",
-            status="completed",
-            message_fa="مرحله طبقه‌بندی تمام شد",
         )
 
         await _emit(

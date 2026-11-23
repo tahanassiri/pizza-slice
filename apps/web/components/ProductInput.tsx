@@ -17,9 +17,11 @@ export function ProductInput() {
   const [fixture, setFixture] = useState<FixtureId>("happy");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [analysisPath, setAnalysisPath] = useState<string | null>(null);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (busy) return;
     const trimmed = product.trim();
     if (!trimmed) {
       setError(fa.productInput.requiredProduct);
@@ -39,10 +41,13 @@ export function ProductInput() {
         hs_code: hs.trim() || undefined,
         ...(isMock ? { fixture_id: fixture } : {}),
       });
-      router.push(`/analysis/${run_id}`);
+      const path = `/analysis/${encodeURIComponent(run_id)}`;
+      setAnalysisPath(path);
+      router.push(path);
     } catch (cause) {
-      setError(cause instanceof Error && cause.message === "RATE_LIMITED"
-        ? fa.error.requestLimit
+      const code = cause instanceof Error ? cause.message : "";
+      setError(code === "RATE_LIMITED" ? fa.error.requestLimit
+        : code === "RUN_REQUEST_TIMEOUT" ? fa.error.startTimeout
         : fa.error.generic);
       setBusy(false);
     }
@@ -134,7 +139,8 @@ export function ProductInput() {
 
       {busy ? (
         <LoadingState
-          label={fa.loading.startingAnalysis}
+          label={analysisPath ? fa.loading.openingAnalysis : fa.loading.startingAnalysis}
+          hint={analysisPath ? fa.loading.analysisRegistered : fa.loading.submittingAnalysis}
           stages={[
             fa.loading.stages.prepare,
             fa.loading.stages.fetch,
@@ -143,8 +149,15 @@ export function ProductInput() {
         />
       ) : null}
 
+      {analysisPath ? (
+        <button type="button" className="nova-btn-ghost w-full"
+          onClick={() => window.location.assign(analysisPath)}>
+          {fa.loading.openAnalysis}
+        </button>
+      ) : null}
+
       <button type="submit" className="nova-btn-primary w-full" disabled={busy}>
-        {busy ? fa.loading.pleaseWait : fa.productInput.submit}
+        {analysisPath ? fa.loading.openingAnalysis : busy ? fa.loading.startingAnalysis : fa.productInput.submit}
       </button>
       {isMock ? (
         <p className="text-[0.7rem] leading-5 text-[var(--ink-muted)]">{fa.mockNotice}</p>

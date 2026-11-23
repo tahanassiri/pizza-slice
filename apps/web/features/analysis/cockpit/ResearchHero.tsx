@@ -75,17 +75,16 @@ export function ResearchHero({
               blocked ? "text-[var(--cockpit-danger)]" : "text-white"
             }`}
           >
-            {latest?.message_fa ?? fa.cockpit.noResults}
+            {latest?.message_fa ?? (live ? heroCopy(run.status) : fa.cockpit.noResults)}
           </h2>
 
           {run.error ? (
             <p className="break-words text-sm text-[var(--cockpit-danger)]">{run.error.message_fa}</p>
-          ) : (
+          ) : live || run.is_mock ? (
             <p className="max-w-2xl break-words text-sm leading-7 text-[var(--cockpit-muted)]">
-              مسیر شناخت محصول تا پیشنهاد بازار به‌صورت مرحله‌ای به‌روز می‌شود. این پیش‌نمایش
-              آزمایشی است و ادعای تحقیق زنده ندارد.
+              {run.is_mock ? fa.cockpit.previewHint : fa.cockpit.backgroundHint}
             </p>
-          )}
+          ) : null}
         </div>
 
         <div className="min-w-0 w-full max-w-full rounded-2xl border border-[var(--cockpit-line-strong)] bg-black/35 px-3 py-3 text-left shadow-[0_0_40px_rgba(12,182,170,0.08)] sm:w-auto sm:px-4" dir="ltr">

@@ -77,6 +77,19 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
+async function requestRun<T>(path: string, init?: RequestInit): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    return await request<T>(path, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("RUN_REQUEST_TIMEOUT");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function adminLogin(username: string, password: string): Promise<string> {
   const out = await request<{ access_token: string }>("/api/admin/login", {
     method: "POST",
@@ -106,7 +119,7 @@ export const liveAdapter: NovaApiClientLike = {
   source: "live",
 
   async createRun(input: CreateRunInput): Promise<CreateRunResponse> {
-    return request<CreateRunResponse>("/api/runs", {
+    return requestRun<CreateRunResponse>("/api/runs", {
       method: "POST",
       body: JSON.stringify({
         product: input.product,
@@ -117,7 +130,7 @@ export const liveAdapter: NovaApiClientLike = {
   },
 
   async getRun(id: string): Promise<RunSnapshot> {
-    return request<RunSnapshot>(`/api/runs/${encodeURIComponent(id)}`);
+    return requestRun<RunSnapshot>(`/api/runs/${encodeURIComponent(id)}`);
   },
 
   async getMarkets(id: string) {
