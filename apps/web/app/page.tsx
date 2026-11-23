@@ -1,39 +1,58 @@
 import { ProductInput } from "@/components/ProductInput";
-import { MockBanner } from "@/components/MockBanner";
 import { fa } from "@/lib/i18n/fa";
 
 export default function HomePage() {
   return (
-    <div className="relative">
-      <section className="relative min-h-[calc(100vh-8rem)] overflow-hidden pb-10">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 -top-8 h-[70vh] overflow-hidden rounded-3xl"
-        >
-          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_70%_30%,rgba(15,110,106,0.28),transparent_55%),linear-gradient(120deg,#0c1b2a_0%,#1a3348_45%,#0f6e6a_100%)]" />
-          <div className="absolute inset-0 opacity-40 mix-blend-overlay [background-image:url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22160%22 height=%22160%22 viewBox=%220 0 160 160%22%3E%3Cpath fill=%22none%22 stroke=%22%23ffffff%22 stroke-opacity=%220.12%22 d=%22M0 80h160M80 0v160%22/%3E%3C/svg%3E')]" />
-          <div className="absolute -left-10 bottom-10 h-40 w-40 rounded-full bg-white/10 blur-2xl animate-pulse-soft" />
-          <div className="absolute right-10 top-16 h-28 w-28 rounded-full bg-[var(--accent)]/30 blur-xl" />
+    <div className="relative -mx-4 sm:-mx-6 -my-6 sm:-my-10 min-h-[calc(100vh-3.5rem)] overflow-hidden px-4 sm:px-6">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+      >
+        <div className="absolute -left-20 top-10 h-72 w-72 rounded-full bg-[var(--accent)]/15 blur-3xl" />
+        <div className="absolute bottom-0 right-0 h-80 w-80 rounded-full bg-[var(--mock)]/10 blur-3xl" />
+        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-l from-transparent via-[var(--accent)]/40 to-transparent" />
+      </div>
+
+      <section className="relative z-10 mx-auto grid max-w-6xl gap-10 pb-16 pt-8 lg:grid-cols-[1.15fr_0.85fr] lg:items-center lg:gap-14 lg:pt-16">
+        <div className="animate-fade-up space-y-6">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="cockpit-chip-mock cockpit-chip">{fa.mockPreviewBadge}</span>
+            <span className="cockpit-chip-mock cockpit-chip">{fa.mockBadge}</span>
+          </div>
+
+          <p className="font-display text-5xl font-bold tracking-tight text-white sm:text-6xl md:text-7xl">
+            {fa.brand}
+          </p>
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-[var(--mock)]">
+            {fa.brandSubtitle}
+          </p>
+          <h1 className="max-w-xl text-2xl font-semibold leading-snug text-white sm:text-3xl">
+            {fa.home.headline}
+          </h1>
+          <p className="max-w-lg text-sm leading-7 text-[var(--ink-muted)] sm:text-base">
+            {fa.home.support}
+          </p>
+
+          <div>
+            <p className="mb-2 text-xs text-[var(--ink-muted)]">{fa.home.pathLabel}</p>
+            <ol className="flex flex-wrap gap-2">
+              {fa.home.pathSteps.map((step, i) => (
+                <li
+                  key={step}
+                  className="rounded-full border border-[var(--line)] bg-black/20 px-3 py-1 text-xs text-[var(--ink-soft)]"
+                >
+                  <span className="me-1.5 text-[var(--accent)]" dir="ltr">
+                    {i + 1}
+                  </span>
+                  {step}
+                </li>
+              ))}
+            </ol>
+          </div>
         </div>
 
-        <div className="relative z-10 grid gap-10 px-1 pt-6 sm:px-2 lg:grid-cols-[1.1fr_0.9fr] lg:items-end lg:px-4 lg:pt-16">
-          <div className="animate-fade-up space-y-5 px-1 text-white lg:pb-8">
-            <p className="font-display text-5xl font-bold tracking-tight sm:text-6xl md:text-7xl">
-              {fa.brand}
-            </p>
-            <p className="text-lg text-white/80 sm:text-xl">{fa.brandSubtitle}</p>
-            <h1 className="max-w-xl text-2xl font-semibold leading-snug text-white/95 sm:text-3xl">
-              {fa.home.headline}
-            </h1>
-            <p className="max-w-lg text-sm leading-7 text-white/75 sm:text-base">
-              {fa.home.support}
-            </p>
-          </div>
-
-          <div className="animate-fade-up space-y-3" style={{ animationDelay: "80ms" }}>
-            <MockBanner className="bg-[var(--mock-soft)]/95" />
-            <ProductInput />
-          </div>
+        <div className="animate-fade-up" style={{ animationDelay: "90ms" }}>
+          <ProductInput />
         </div>
       </section>
     </div>

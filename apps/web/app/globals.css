@@ -3,28 +3,33 @@
 @tailwind utilities;
 
 :root {
-  --ink: #0c1b2a;
-  --ink-soft: #1a3348;
-  --ink-muted: #4a6275;
-  --paper: #f2f6f8;
-  --paper-elevated: #ffffff;
-  --fog: #dce6ec;
-  --line: #c5d3dc;
-  --accent: #0f6e6a;
-  --accent-hover: #0c5956;
-  --accent-soft: #d7efed;
-  --warn: #9a6700;
-  --warn-soft: #fff3cd;
-  --danger: #b42318;
-  --danger-soft: #fee4e2;
-  --ok: #027a48;
-  --ok-soft: #dcfae6;
-  --mock: #7a4d00;
-  --mock-soft: #fff1d6;
-  --radius: 12px;
-  --shadow-soft: 0 12px 40px rgba(12, 27, 42, 0.08);
+  --ink: #f6f8fb;
+  --ink-soft: rgba(246, 248, 251, 0.82);
+  --ink-muted: rgba(246, 248, 251, 0.58);
+  --paper: #0b1426;
+  --paper-elevated: #13233d;
+  --fog: rgba(246, 248, 251, 0.08);
+  --line: rgba(230, 240, 255, 0.12);
+  --accent: #0cb6aa;
+  --accent-hover: #0a9e94;
+  --accent-soft: rgba(12, 182, 170, 0.16);
+  --warn: #e6b765;
+  --warn-soft: rgba(230, 183, 101, 0.14);
+  --danger: #f07167;
+  --danger-soft: rgba(240, 113, 103, 0.16);
+  --ok: #3dd68c;
+  --ok-soft: rgba(61, 214, 140, 0.14);
+  --mock: #e6b765;
+  --mock-soft: rgba(230, 183, 101, 0.14);
+  --radius: 14px;
+  --shadow-soft: 0 18px 50px rgba(0, 0, 0, 0.28);
   --font-sans: var(--font-vazirmatn), "Vazirmatn", Tahoma, sans-serif;
   --font-display: var(--font-syne), var(--font-vazirmatn), sans-serif;
+  /* study surface (reports / dense forms inside cockpit) */
+  --study-ink: #0c1b2a;
+  --study-muted: #4a6275;
+  --study-line: #d5dee6;
+  --study-bg: #f6f8fb;
 }
 
 html {
@@ -45,9 +50,9 @@ body::before {
   inset: 0;
   z-index: -2;
   background:
-    radial-gradient(1200px 600px at 100% -10%, rgba(15, 110, 106, 0.16), transparent 55%),
-    radial-gradient(900px 500px at -10% 20%, rgba(26, 51, 72, 0.12), transparent 50%),
-    linear-gradient(165deg, #eef4f7 0%, #e3ecf1 45%, #d8e5ea 100%);
+    radial-gradient(1000px 520px at 90% -10%, rgba(12, 182, 170, 0.18), transparent 55%),
+    radial-gradient(800px 420px at 0% 20%, rgba(230, 183, 101, 0.08), transparent 50%),
+    linear-gradient(165deg, #0b1426 0%, #0e1a30 48%, #101f38 100%);
 }
 
 body::after {
@@ -55,13 +60,13 @@ body::after {
   position: fixed;
   inset: 0;
   z-index: -1;
-  opacity: 0.35;
+  opacity: 0.22;
   pointer-events: none;
   background-image:
-    linear-gradient(rgba(12, 27, 42, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(12, 27, 42, 0.03) 1px, transparent 1px);
-  background-size: 48px 48px;
-  mask-image: radial-gradient(circle at 50% 20%, black, transparent 75%);
+    linear-gradient(rgba(246, 248, 251, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(246, 248, 251, 0.04) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse at 50% 15%, black 15%, transparent 70%);
 }
 
 @layer components {
@@ -70,11 +75,11 @@ body::after {
   }
 
   .nova-panel {
-    background: color-mix(in srgb, var(--paper-elevated) 92%, transparent);
+    background: color-mix(in srgb, var(--paper-elevated) 78%, transparent);
     border: 1px solid var(--line);
     border-radius: var(--radius);
     box-shadow: var(--shadow-soft);
-    backdrop-filter: blur(8px);
+    backdrop-filter: blur(14px);
   }
 
   .nova-btn {
@@ -82,8 +87,9 @@ body::after {
   }
 
   .nova-btn-primary {
-    @apply nova-btn text-white;
+    @apply nova-btn text-[#041016];
     background: var(--accent);
+    box-shadow: 0 0 24px rgba(12, 182, 170, 0.28);
   }
 
   .nova-btn-primary:hover {
@@ -103,11 +109,13 @@ body::after {
 
   .nova-btn-ghost:hover {
     background: var(--fog);
+    color: white;
   }
 
   .nova-input {
-    @apply w-full rounded-xl border bg-white px-3 py-2.5 text-sm outline-none transition;
+    @apply w-full rounded-xl border px-3 py-2.5 text-sm outline-none transition;
     border-color: var(--line);
+    background: rgba(0, 0, 0, 0.28);
     color: var(--ink);
   }
 
@@ -124,22 +132,62 @@ body::after {
   .mock-banner {
     background: var(--mock-soft);
     color: var(--mock);
-    border: 1px solid color-mix(in srgb, var(--mock) 25%, transparent);
+    border: 1px solid color-mix(in srgb, var(--mock) 35%, transparent);
+  }
+
+  .study-surface {
+    background: var(--study-bg);
+    color: var(--study-ink);
+    border: 1px solid var(--study-line);
+    border-radius: 16px;
+  }
+
+  .study-surface .nova-input {
+    background: white;
+    border-color: var(--study-line);
+    color: var(--study-ink);
+  }
+
+  .study-surface .nova-label,
+  .study-surface .text-ink-soft {
+    color: #1a3348;
+  }
+
+  .study-surface .text-ink-muted {
+    color: var(--study-muted);
+  }
+
+  .dossier-row {
+    border: 1px solid var(--study-line);
+    border-radius: 16px;
+    background: white;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .dossier-row[data-selected="true"] {
+    border-color: #0cb6aa;
+    box-shadow: 0 0 0 1px rgba(12, 182, 170, 0.35), 0 12px 30px rgba(12, 27, 42, 0.08);
   }
 
   @media print {
     body::before,
     body::after,
     header,
-    .no-print {
+    .no-print,
+    .cockpit::before {
       display: none !important;
     }
-    body {
-      background: white;
+    body,
+    .cockpit {
+      background: white !important;
+      color: #0c1b2a !important;
     }
-    .nova-panel {
+    .nova-panel,
+    .study-surface {
       box-shadow: none;
       border-color: #ddd;
+      background: white;
+      color: #0c1b2a;
     }
   }
 }

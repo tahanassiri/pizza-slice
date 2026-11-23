@@ -18,7 +18,9 @@ export const fa = {
     headline: "بازار صادراتی را با شواهد پیدا کنید",
     support:
       "محصول را وارد کنید؛ مسیر از کشف بازار تا گزارش نهایی را گام‌به‌گام ببینید.",
-    cta: "شروع تحلیل آزمایشی",
+    cta: "شروع تحلیل صادرات",
+    pathLabel: "مسیر فرمان صادرات",
+    pathSteps: ["شناخت محصول", "کشف بازار", "خریداران", "امکان‌سنجی", "گزارش"],
   },
 
   productInput: {
@@ -29,7 +31,7 @@ export const fa = {
     hsOptional: "کد HS (اختیاری)",
     hsPlaceholder: "مثلاً ۰۸۰۲",
     fixture: "سناریوی آزمایشی",
-    submit: "شروع تحلیل",
+    submit: "شروع تحلیل صادرات",
     requiredProduct: "نام محصول را وارد کنید.",
     productTooShort: "نام محصول کوتاه است.",
   },
@@ -231,7 +233,7 @@ export const fa = {
   },
 
   footer: {
-    phase: "فاز A — فرانت‌اند آزمایشی",
+    phase: "فرانت‌اند آزمایشی · Command Bridge",
     privacy: "خصوصی · بدون کلید در مرورگر",
   },
 } as const;

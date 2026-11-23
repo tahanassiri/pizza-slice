@@ -45,7 +45,18 @@ export function ProductInput() {
   }
 
   return (
-    <form onSubmit={onSubmit} className="nova-panel space-y-4 p-5 sm:p-6">
+    <form
+      onSubmit={onSubmit}
+      className="nova-panel relative overflow-hidden space-y-4 p-5 sm:p-6"
+    >
+      <div className="absolute inset-y-4 end-0 w-1 rounded-full bg-[var(--mock)]/70" aria-hidden />
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium uppercase tracking-[0.16em] text-[var(--mock)]">
+          {fa.cockpit.cockpitLabel}
+        </p>
+        <span className="cockpit-chip-mock cockpit-chip text-[0.65rem]">{fa.mockBadge}</span>
+      </div>
+
       <div>
         <label className="nova-label" htmlFor="product">
           {fa.productInput.product}
@@ -111,9 +122,10 @@ export function ProductInput() {
         </p>
       ) : null}
 
-      <button type="submit" className="nova-btn-primary w-full sm:w-auto" disabled={busy}>
+      <button type="submit" className="nova-btn-primary w-full" disabled={busy}>
         {busy ? fa.loading.title : fa.productInput.submit}
       </button>
+      <p className="text-[0.7rem] leading-5 text-[var(--ink-muted)]">{fa.mockNotice}</p>
     </form>
   );
 }

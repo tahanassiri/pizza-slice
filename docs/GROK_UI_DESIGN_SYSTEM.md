@@ -68,3 +68,12 @@ Study/report panes that open from destination nav may use light surfaces inside 
 `queued` · `running` · `partial` · `completed` · `failed` · `rate_limited` · `provider_unavailable` · `connection_lost` · `no_results`
 
 Mock labels **«پیش‌نمایش آزمایشی / داده آزمایشی»** remain permanent.
+
+## Generalization (post-approval)
+Same tokens site-wide. Page compositions stay distinct:
+- **Home:** dark hero + path chips + command form (not a card grid)
+- **Markets:** rank strips + dossiers
+- **Buyers:** verification ribbon directory
+- **Feasibility:** input ledger + scenario columns
+- **Report:** light editorial document in dark chrome
+- **Admin:** operations rack / console rows

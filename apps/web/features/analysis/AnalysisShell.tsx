@@ -225,9 +225,16 @@ export function AnalysisShell({
           </div>
         </div>
       ) : (
-        <div className="cockpit-study space-y-4 p-4 sm:p-5">
+        <div className="study-surface space-y-4 p-4 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-lg font-semibold text-ink">{fa.analysis.tabs[tab]}</h2>
+            <div>
+              <p className="text-[0.65rem] uppercase tracking-[0.14em] text-[#0cb6aa]">
+                intelligence pane
+              </p>
+              <h2 className="text-lg font-semibold text-[var(--study-ink)]">
+                {fa.analysis.tabs[tab]}
+              </h2>
+            </div>
             <span className="mock-banner rounded-lg px-2 py-1 text-xs font-medium">
               {fa.mockBadge}
             </span>

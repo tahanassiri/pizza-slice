@@ -45,9 +45,14 @@ export default function AdminPage() {
   if (!settings) return <LoadingState />;
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">{fa.admin.settingsTitle}</h1>
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-[var(--line)] pb-4">
+        <div>
+          <p className="text-[0.65rem] uppercase tracking-[0.16em] text-[var(--accent)]">
+            operations console
+          </p>
+          <h1 className="text-2xl font-semibold text-white">{fa.admin.settingsTitle}</h1>
+        </div>
         <Link href="/" className="nova-btn-ghost !text-xs">
           {fa.nav.home}
         </Link>

@@ -11,10 +11,10 @@ export function EmptyState({
   action?: ReactNode;
 }) {
   return (
-    <div className="nova-panel flex flex-col items-start gap-2 p-6">
-      <p className="text-lg font-semibold text-ink-soft">{title}</p>
-      {hint ? <p className="text-sm text-ink-muted">{hint}</p> : null}
-      {action}
+    <div className="rounded-2xl border border-dashed border-[var(--study-line)] bg-white/80 p-6">
+      <p className="text-lg font-semibold text-[var(--study-ink)]">{title}</p>
+      {hint ? <p className="mt-1 text-sm text-[var(--study-muted)]">{hint}</p> : null}
+      {action ? <div className="mt-3">{action}</div> : null}
     </div>
   );
 }

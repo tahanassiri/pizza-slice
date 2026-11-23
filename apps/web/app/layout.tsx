@@ -31,7 +31,7 @@ export default function RootLayout({
       <body className={`${vazirmatn.variable} ${syne.variable} font-sans antialiased`}>
         <AppHeader />
         <main className="nova-container py-6 sm:py-10">{children}</main>
-        <footer className="no-print border-t border-line/60 py-6 text-center text-xs text-ink-muted">
+        <footer className="no-print border-t border-[var(--line)] py-6 text-center text-xs text-[var(--ink-muted)]">
           <p>
             {fa.footer.phase} · {fa.footer.privacy}
           </p>
