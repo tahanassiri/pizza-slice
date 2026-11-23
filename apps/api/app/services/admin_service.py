@@ -166,8 +166,13 @@ def update_provider(db: Session, provider_id: str, body: ProviderUpdateIn) -> Pr
     if body.api_key is not None:
         if body.api_key.strip() == "":
             row.encrypted_api_key = None
+            if body.enabled is None:
+                row.enabled = 0
         else:
             row.encrypted_api_key = encrypt_secret(body.api_key.strip())
+            # Saving a key enables the provider so runtime can use it
+            if body.enabled is None:
+                row.enabled = 1
         row.status = "untested"
     row.updated_at = datetime.now(timezone.utc)
     db.commit()

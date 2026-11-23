@@ -58,3 +58,24 @@ def test_admin_store_key_encrypted_not_returned(client, admin_token):
     )
     assert test.status_code == 200
     assert secret not in test.text
+
+
+def test_admin_research_provider_keys_exa_comtrade(client, admin_token):
+    """Tavily/Exa/UN Comtrade each accept encrypted per-provider keys from admin UI."""
+    for pid, secret in (
+        ("exa", "exa-test-secret-do-not-leak"),
+        ("comtrade", "comtrade-test-secret-do-not-leak"),
+    ):
+        res = client.patch(
+            f"/api/admin/providers/{pid}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"api_key": secret},
+        )
+        assert res.status_code == 200, pid
+        body = res.json()
+        assert body["id"] == pid
+        assert body["has_key_configured"] is True
+        assert body["enabled"] is True  # auto-enable on key save
+        assert secret not in res.text
+        assert "encrypted_api_key" not in res.text.lower()
+
