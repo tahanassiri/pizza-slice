@@ -21,13 +21,13 @@ def default_feasibility_template() -> Feasibility:
             "incoterm": "FOB",
         },
         cost_items=[
-            CostItem(id="purchase", label_fa="قیمت خرید / تولید", amount=None, currency="USD", unit="کیلوگرم", required=True, note_fa="نامشخص / نیازمند تکمیل"),
-            CostItem(id="packaging", label_fa="بسته‌بندی", amount=None, currency="USD", unit="کیلوگرم", required=True),
-            CostItem(id="inland", label_fa="حمل داخلی", amount=None, currency="USD", unit="کیلوگرم", required=True),
-            CostItem(id="intl_freight", label_fa="حمل بین‌المللی", amount=None, currency="USD", unit="کیلوگرم", required=True),
-            CostItem(id="insurance", label_fa="بیمه", amount=None, currency="USD", unit="کیلوگرم", required=True),
-            CostItem(id="duty", label_fa="تعرفه", amount=None, currency="USD", unit="کیلوگرم", required=True, note_fa="نامشخص / نیازمند تکمیل"),
-            CostItem(id="fees", label_fa="کارمزدها", amount=None, currency="USD", unit="کیلوگرم", required=True),
+            CostItem(id="purchase", label_fa="قیمت خرید / تولید", amount=None, currency="USD", unit="کیلوگرم", required=True, note_fa="نامشخص / نیازمند تکمیل", status="missing"),
+            CostItem(id="packaging", label_fa="بسته‌بندی", amount=None, currency="USD", unit="کیلوگرم", required=True, status="missing"),
+            CostItem(id="inland", label_fa="حمل داخلی", amount=None, currency="USD", unit="کیلوگرم", required=True, status="missing"),
+            CostItem(id="intl_freight", label_fa="حمل بین‌المللی", amount=None, currency="USD", unit="کیلوگرم", required=True, status="missing"),
+            CostItem(id="insurance", label_fa="بیمه", amount=None, currency="USD", unit="کیلوگرم", required=True, status="missing"),
+            CostItem(id="duty", label_fa="تعرفه", amount=None, currency="USD", unit="کیلوگرم", required=True, note_fa="نامشخص / نیازمند تکمیل", status="missing"),
+            CostItem(id="fees", label_fa="کارمزدها", amount=None, currency="USD", unit="کیلوگرم", required=True, status="missing"),
         ],
         currency="USD",
         incoterm="FOB",
@@ -42,10 +42,13 @@ def default_feasibility_template() -> Feasibility:
         ],
         caveats=[
             "محاسبه قطعی سمت سرور است؛ تا تکمیل ورودی‌ها نتیجه کامل نیست.",
-            "ارائه‌دهنده تحقیق زنده هنوز وصل نیست — ارقام تجاری اختراع نمی‌شوند.",
+            "رقم بدون منبع یا ورودی کاربر به‌صورت missing می‌ماند — سود قطعی جعل نمی‌شود.",
             INCOTERM_NOTE,
         ],
         is_mock_sample=False,
+        break_even_price=None,
+        break_even_qty=None,
+        sensitivity=None,
     )
 
 
@@ -71,12 +74,21 @@ def recompute(feasibility: Feasibility, updates: list[CostUpdate] | None = None)
     items = []
     for item in feasibility.cost_items:
         raw_unit = assumptions.get("unit", item.unit)
-        fields = {"unit": raw_unit if isinstance(raw_unit, str) else None, "required": True}
+        fields: dict = {"unit": raw_unit if isinstance(raw_unit, str) else None, "required": True}
         if change := by_id.get(item.id):
             fields["amount"] = change.amount
             fields["currency"] = change.currency or item.currency
             if change.amount is not None:
                 fields["note_fa"] = None
+                fields["status"] = "user_input"
+            else:
+                fields["status"] = "missing"
+        else:
+            # preserve estimated/verified; mark missing when blank
+            if _assumption_number(item.amount) is None:
+                fields["status"] = item.status or "missing"
+            else:
+                fields["status"] = item.status or "user_input"
         items.append(item.model_copy(update=fields))
 
     missing = [c.label_fa for c in items if _assumption_number(c.amount) is None]
@@ -113,6 +125,9 @@ def recompute(feasibility: Feasibility, updates: list[CostUpdate] | None = None)
                 **common,
                 "missing_inputs": missing,
                 "scenario_results": scenarios,
+                "break_even_price": None,
+                "break_even_qty": None,
+                "sensitivity": None,
             }
         )
 
@@ -139,10 +154,25 @@ def recompute(feasibility: Feasibility, updates: list[CostUpdate] | None = None)
             )
         )
 
+    break_even_price = round(unit_cost, 4) if unit_cost is not None else None
+    break_even_qty = round(unit_cost * qty / sell, 4) if sell else None
+    # Simple sensitivity: ±10% freight / FX / sell price impact on base margin
+    base = next(s for s in scenarios if s.id == "base")
+    sensitivity = {
+        "sell_price_plus_10_margin": round((qty * sell * 1.1) - (qty * unit_cost), 0),
+        "sell_price_minus_10_margin": round((qty * sell * 0.9) - (qty * unit_cost), 0),
+        "unit_cost_plus_10_margin": round((qty * sell) - (qty * unit_cost * 1.1), 0),
+        "unit_cost_minus_10_margin": round((qty * sell) - (qty * unit_cost * 0.9), 0),
+        "base_margin": base.margin,
+    }
+
     return feasibility.model_copy(
         update={
             **common,
             "missing_inputs": [],
             "scenario_results": scenarios,
+            "break_even_price": break_even_price,
+            "break_even_qty": break_even_qty,
+            "sensitivity": sensitivity,
         }
     )

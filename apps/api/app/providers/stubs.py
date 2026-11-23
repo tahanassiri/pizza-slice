@@ -71,3 +71,10 @@ class StubLLMProvider:
             return hs_hint.strip(), "medium"
         # Honest: no invented definitive HS
         return None, "unknown"
+
+    def decide_research_action(self, context: dict) -> str:
+        # Force heuristic path in decide_research_action caller by returning invalid JSON
+        return ""
+
+    def complete_json(self, prompt: str) -> str:
+        return ""

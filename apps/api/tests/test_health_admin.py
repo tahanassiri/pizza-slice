@@ -35,43 +35,15 @@ def test_admin_login_and_providers(client, admin_token):
     assert res.status_code == 200
     body = res.json()
     assert body["is_mock_ui"] is False
-    assert len(body["providers"]) >= 3
-    # Never expose raw keys
+    assert len(body["providers"]) >= 1
+    # Trade sources: free_web + active_llm — no mandatory WITS/Comtrade/Tavily
+    ids = {s["id"] for s in body.get("trade_sources") or []}
+    assert "free_web" in ids
+    assert "wits" not in ids
+    assert "comtrade" not in ids
     raw = res.text.lower()
     assert "sk-" not in raw
     assert "encrypted_api_key" not in raw
-
-
-def test_admin_store_key_encrypted_not_returned(client, admin_token):
-    secret = "sk-test-never-echo-this-value"
-    res = client.patch(
-        "/api/admin/providers/tavily",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"api_key": secret, "enabled": True},
-    )
-    assert res.status_code == 200
-    body = res.json()
-    assert body["has_key_configured"] is True
-    assert secret not in res.text
-    assert body.get("api_key") is None
-
-    with patch("httpx.Client") as provider_http:
-        test = client.post(
-            "/api/admin/test-connection",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"provider_id": "tavily"},
-        )
-    provider_http.assert_not_called()
-    assert test.status_code == 200
-    assert test.json()["ok"] is False
-    assert test.json()["checked"] is False
-    assert secret not in test.text
-    settings = client.get(
-        "/api/admin/providers", headers={"Authorization": f"Bearer {admin_token}"}
-    ).json()
-    tavily = next(row for row in settings["providers"] if row["id"] == "tavily")
-    assert tavily["status"] == "untested"
-    assert tavily["enabled"] and tavily["has_key_configured"]
 
 
 def test_admin_model_key_presence_is_not_connection_success(client, admin_token):
@@ -97,22 +69,6 @@ def test_admin_model_key_presence_is_not_connection_success(client, admin_token)
     assert secret not in result.text
 
 
-def test_admin_comtrade_connection_reports_public_probe(client, admin_token):
-    with patch("httpx.Client") as provider_http:
-        get = provider_http.return_value.__enter__.return_value.get
-        get.return_value.status_code = 200
-        result = client.post(
-            "/api/admin/test-connection",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"provider_id": "comtrade"},
-        )
-
-    assert result.status_code == 200
-    assert result.json()["ok"] is True
-    assert result.json()["checked"] is True
-    assert get.call_args.args[0] == "https://comtradeapi.un.org/public/v1/preview/C/A/HS"
-
-
 def test_gemini_sends_key_in_header_and_keeps_url_clean():
     key = "gemini-placeholder-no-live-request"
     with patch("httpx.Client") as provider_http:
@@ -128,22 +84,21 @@ def test_gemini_sends_key_in_header_and_keeps_url_clean():
     assert post.call_args.kwargs["headers"] == {"x-goog-api-key": key}
 
 
-def test_admin_research_provider_keys_exa_comtrade(client, admin_token):
-    """Tavily/Exa/UN Comtrade each accept encrypted per-provider keys from admin UI."""
-    for pid, secret in (
-        ("exa", "exa-test-secret-do-not-leak"),
-        ("comtrade", "comtrade-test-secret-do-not-leak"),
-    ):
+def test_admin_rejects_removed_trade_provider_keys(client, admin_token):
+    """Tavily/Exa/Comtrade are not mandatory admin providers anymore."""
+    for pid in ("tavily", "exa", "comtrade"):
         res = client.patch(
             f"/api/admin/providers/{pid}",
             headers={"Authorization": f"Bearer {admin_token}"},
-            json={"api_key": secret},
+            json={"api_key": "should-not-matter", "enabled": True},
         )
-        assert res.status_code == 200, pid
-        body = res.json()
-        assert body["id"] == pid
-        assert body["has_key_configured"] is True
-        assert body["enabled"] is True  # auto-enable on key save
-        assert secret not in res.text
-        assert "encrypted_api_key" not in res.text.lower()
-
+        # Either 404 (not seeded) or soft-disabled legacy row without enabling paid path
+        assert res.status_code in {200, 404}
+        if res.status_code == 200:
+            # Legacy rows stay soft-disabled by ensure_providers
+            settings = client.get(
+                "/api/admin/providers", headers={"Authorization": f"Bearer {admin_token}"}
+            ).json()
+            # trade_sources must not advertise them as required
+            ids = {s["id"] for s in settings.get("trade_sources") or []}
+            assert pid not in ids

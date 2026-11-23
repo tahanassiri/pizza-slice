@@ -1,23 +1,13 @@
-# ارائه‌دهندگان (Providers)
+# Providers (architecture correction)
 
-## حالت‌ها
-| `PROVIDER_MODE` | رفتار |
-|-----------------|-------|
-| `auto` (پیش‌فرض) | World Bank + Wikipedia رایگان؛ Tavily/Gemini فقط اگر کلید ادمین فعال باشد |
-| `stub` | بدون تماس خارجی (تست/آفلاین) |
+## What drives research
+- **Active LLM** (admin model picker + per-version encrypted key) is the research decision-maker.
+- **Free web tools** (Wikipedia OpenSearch + DuckDuckGo HTML) discover sources dynamically — no API key.
+- **Saved key ≠ Verified connection.** Test connection is separate from “key saved”.
 
-## جدول
-| Provider | نقش | کلید | وضعیت |
-|----------|-----|------|--------|
-| World Bank | رتبه‌بندی اولیه بازار (کلان) | ندارد | زنده رایگان |
-| Wikipedia | منبع زمینه‌ای محصول | ندارد | زنده رایگان |
-| Tavily | جست‌وجوی تکمیلی / خریدار | سرور | فقط با کلید |
-| Exa | رزرو | سرور | UI + ذخیره کلید |
-| UN Comtrade | آمار HS | سرور | فاز بعدی / کلید |
-| Gemini | حدس HS | سرور | فقط با کلید |
+## Removed as mandatory integrations
+Tavily, Exa, WITS, and UN Comtrade are **not** required, configured, or advertised as mandatory admin key fields.
+Legacy DB rows (if present) are soft-disabled. Library code under `trade_data/` may remain for optional experiments but is **not** on the agent critical path.
 
-## قواعد
-- کلیدها فقط سمت سرور (Fernet)
-- بدون هزینه پولی خودکار
-- بدون فهرست خریدار جعلی
-- mock و live مخلوط نمی‌شوند
+## Budgets
+Server-enforced before tool calls via `AgentBudget` / `/api/admin/budgets`.

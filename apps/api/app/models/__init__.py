@@ -1,3 +1,33 @@
-from app.models.entities import AppMeta, ProviderSetting, Run, RunEventRow
+from app.models.entities import (
+    AgentBudget,
+    AppMeta,
+    BuyerSearchRow,
+    Claim,
+    CompanyProfile,
+    CostEstimate,
+    EvidenceSource,
+    KnowledgeItem,
+    MarketAssessment,
+    ProviderSetting,
+    ResearchTask,
+    Run,
+    RunEventRow,
+    UsageAudit,
+)
 
-__all__ = ["AppMeta", "ProviderSetting", "Run", "RunEventRow"]
+__all__ = [
+    "AgentBudget",
+    "AppMeta",
+    "BuyerSearchRow",
+    "Claim",
+    "CompanyProfile",
+    "CostEstimate",
+    "EvidenceSource",
+    "KnowledgeItem",
+    "MarketAssessment",
+    "ProviderSetting",
+    "ResearchTask",
+    "Run",
+    "RunEventRow",
+    "UsageAudit",
+]
