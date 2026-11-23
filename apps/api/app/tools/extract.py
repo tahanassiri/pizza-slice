@@ -55,8 +55,11 @@ def extract_claims(
             {
                 "statement": s,
                 "data_kind": "estimate",
-                "confidence": "low",
+                "confidence": "unknown",
                 "source_url": url,
+                "product": product,
+                "country": None,
+                "period": None,
                 "extracted_at": datetime.now(timezone.utc).isoformat(),
             }
         )

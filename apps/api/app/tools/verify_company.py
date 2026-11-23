@@ -72,8 +72,9 @@ def verify_company(
                 "website": website,
                 "country": country,
                 "verification_status": "rejected",
-                "category": "unknown",
+                "category": "directory",
                 "reason_fa": "دامنه آگهی/دایرکتوری فروشنده",
+                "purchase_intent": None,
             },
         )
 
@@ -110,6 +111,7 @@ def verify_company(
 
     if sellerish and not buyerish:
         status = "rejected"
+        category = "seller"
         reason = "علائم فروشنده/صادرکننده بدون نقش خریدار"
     elif buyerish and website and page_text:
         status = "source_backed"
@@ -140,6 +142,7 @@ def verify_company(
             "category": category,
             "reason_fa": reason,
             "fit_evidence": fit,
+            "purchase_intent": None,
             "business_type_fa": {
                 "importer": "واردکننده",
                 "distributor": "توزیع‌کننده",

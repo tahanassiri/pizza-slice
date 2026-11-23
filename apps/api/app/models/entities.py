@@ -169,6 +169,9 @@ class Claim(Base):
     data_kind: Mapped[str] = mapped_column(String(32), default="estimate")  # fact/estimate/user_input
     hs_scope: Mapped[str | None] = mapped_column(String(32), nullable=True)
     country_scope: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    product_scope: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    period: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     confidence: Mapped[str] = mapped_column(String(16), default="unknown")
     status: Mapped[str] = mapped_column(String(32), default="active")
     version: Mapped[int] = mapped_column(Integer, default=1)

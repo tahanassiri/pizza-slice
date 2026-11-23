@@ -52,7 +52,7 @@ def append_event(
     payload: dict | None = None,
     source_refs: list[Source] | None = None,
     error_code: str | None = None,
-) -> RunEventOut:
+) -> tuple[RunEventOut, bool]:
     seq = next_seq(db, run_id)
     row = RunEventRow(
         event_id=event_id,
@@ -70,9 +70,12 @@ def append_event(
         error_code=error_code,
         seq=seq,
     )
+    existing = db.scalar(select(RunEventRow).where(RunEventRow.event_id == event_id))
+    if existing:
+        return row_to_event(existing), False
     db.add(row)
     db.flush()
-    return row_to_event(row)
+    return row_to_event(row), True
 
 
 def list_events(

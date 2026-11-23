@@ -9,7 +9,8 @@ export type RunStatus =
   | "failed"
   | "rate_limited"
   | "provider_unavailable"
-  | "cancelled";
+  | "cancelled"
+  | "interrupted";
 
 export type AnalysisPhase =
   | "intake"

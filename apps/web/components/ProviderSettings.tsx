@@ -4,10 +4,7 @@ import { useMemo, useState } from "react";
 import { fa } from "@/lib/i18n/fa";
 import { resolveSource } from "@/lib/api/client";
 import { getAdminToken } from "@/lib/api/live-adapter";
-import type { AdminSettingsView, LlmModelOption, ProviderConfig } from "@/types";
-
-/** Research providers that get dedicated API-key fields in admin. */
-const RESEARCH_PROVIDER_IDS = ["tavily", "exa", "comtrade"] as const;
+import type { AdminSettingsView, LlmModelOption } from "@/types";
 
 function liveApiBase(): string {
   if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE_URL !== undefined) {
@@ -24,9 +21,6 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
   const [busy, setBusy] = useState(false);
   const [selectedModel, setSelectedModel] = useState(settings.selected_model);
   const [models, setModels] = useState<LlmModelOption[]>(settings.llm_models ?? []);
-  const [providers, setProviders] = useState<ProviderConfig[]>(settings.providers);
-  const [providerKeyDrafts, setProviderKeyDrafts] = useState<Record<string, string>>({});
-
   const groups = useMemo(() => {
     if (settings.llm_groups?.length) return settings.llm_groups;
     const map = new Map<string, { id: string; label_fa: string; models: LlmModelOption[] }>();
@@ -41,23 +35,6 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
     }
     return Array.from(map.values());
   }, [settings.llm_groups, models]);
-
-  const researchProviders = useMemo(
-    () =>
-      RESEARCH_PROVIDER_IDS.map(
-        (id) =>
-          providers.find((p) => p.id === id) ??
-          ({
-            id,
-            name: id === "comtrade" ? "UN Comtrade" : id === "exa" ? "Exa" : "Tavily",
-            enabled: false,
-            has_key_configured: false,
-            status: "untested",
-            usage_note_fa: "",
-          } satisfies ProviderConfig)
-      ),
-    [providers]
-  );
 
   const activeMeta = models.find((m) => m.id === selectedModel);
 
@@ -153,129 +130,13 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
         body: JSON.stringify({ provider_id: `model:${selectedModel}` }),
       });
       if (!res.ok) throw new Error("fail");
-      const body = (await res.json()) as { message_fa?: string };
-      setModelCheckMessage(body.message_fa || "نتیجه بررسی کلید مشخص نشد.");
+      const body = (await res.json()) as { message_fa?: string; connection_status?: string };
+      setModelCheckMessage(
+        [body.connection_status, body.message_fa].filter(Boolean).join(" — ") ||
+          "نتیجه بررسی کلید مشخص نشد."
+      );
     } catch {
       setModelCheckMessage(fa.error.generic);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function toggleProvider(providerId: string, enabled: boolean) {
-    setBusy(true);
-    try {
-      if (isMock) {
-        setProviders((prev) =>
-          prev.map((p) => (p.id === providerId ? { ...p, enabled } : p))
-        );
-        setMessage(
-          enabled
-            ? `ارائه‌دهنده نمایشی ${providerId} فعال شد.`
-            : `ارائه‌دهنده نمایشی ${providerId} غیرفعال شد.`
-        );
-        return;
-      }
-      const base = liveApiBase();
-      const res = await fetch(`${base}/api/admin/providers/${providerId}`, {
-        method: "PATCH",
-        headers: await authHeaders(),
-        body: JSON.stringify({ enabled }),
-      });
-      if (!res.ok) throw new Error("fail");
-      const body = (await res.json()) as ProviderConfig;
-      setProviders((prev) => {
-        const others = prev.filter((p) => p.id !== providerId);
-        return [...others, body].sort((a, b) => a.name.localeCompare(b.name));
-      });
-      setMessage(
-        body.enabled
-          ? `${body.name} فعال شد (کلید برای Comtrade اجباری نیست).`
-          : `${body.name} غیرفعال شد.`
-      );
-    } catch {
-      setMessage(fa.error.generic);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function saveProviderKey(providerId: string, clear = false) {
-    setBusy(true);
-    try {
-      const draft = clear ? "" : (providerKeyDrafts[providerId] ?? "").trim();
-      if (!clear && !draft) {
-        setMessage("کلید خالی است — چیزی برای ذخیره نیست.");
-        setBusy(false);
-        return;
-      }
-      if (isMock) {
-        setProviderKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
-        setProviders((prev) =>
-          prev.map((p) =>
-            p.id === providerId
-              ? {
-                  ...p,
-                  has_key_configured: !clear && Boolean(draft),
-                  enabled: !clear && Boolean(draft),
-                  status: "untested",
-                }
-              : p
-          )
-        );
-        setMessage(
-          clear
-            ? `کلید نمایشی ${providerId} پاک شد.`
-            : `کلید نمایشی ${providerId} ذخیره شد (بدون تماس واقعی).`
-        );
-        return;
-      }
-      const base = liveApiBase();
-      const res = await fetch(`${base}/api/admin/providers/${providerId}`, {
-        method: "PATCH",
-        headers: await authHeaders(),
-        body: JSON.stringify({
-          api_key: draft,
-          enabled: !clear && Boolean(draft),
-        }),
-      });
-      if (!res.ok) throw new Error("fail");
-      const body = (await res.json()) as ProviderConfig;
-      setProviderKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
-      setProviders((prev) => {
-        const others = prev.filter((p) => p.id !== providerId);
-        return [...others, body].sort((a, b) => a.name.localeCompare(b.name));
-      });
-      setMessage(
-        body.has_key_configured
-          ? `کلید ${body.name} ذخیره و فعال شد.`
-          : `کلید ${body.name} پاک شد.`
-      );
-    } catch {
-      setMessage(fa.error.generic);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function testProvider(providerId: string) {
-    setBusy(true);
-    try {
-      if (isMock) {
-        setMessage(`آزمون نمایشی ${providerId} انجام شد.`);
-        return;
-      }
-      const base = liveApiBase();
-      const res = await fetch(`${base}/api/admin/test-connection`, {
-        method: "POST",
-        headers: await authHeaders(),
-        body: JSON.stringify({ provider_id: providerId }),
-      });
-      if (!res.ok) throw new Error("fail");
-      const body = (await res.json()) as { message_fa?: string };
-      setMessage(body.message_fa || "نتیجه بررسی مشخص نشد.");
-    } catch {
-      setMessage(fa.error.generic);
     } finally {
       setBusy(false);
     }
@@ -322,109 +183,11 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
         </section>
       ) : null}
 
-      <section className="nova-panel min-w-0 space-y-3 overflow-hidden p-4 sm:p-5">
-        <div className="mb-1 flex items-center justify-between gap-2">
-          <h2 className="font-semibold text-white">{fa.admin.researchProviders}</h2>
-          <span className="text-[0.65rem] uppercase tracking-[0.14em] text-[var(--ink-muted)]">
-            keys
-          </span>
-        </div>
-        <ul className="space-y-4">
-          {researchProviders.map((p) => (
-            <li
-              key={p.id}
-              className="min-w-0 space-y-3 rounded-xl border border-[var(--line)] bg-black/25 px-3 py-3"
-            >
-              <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-3">
-                  <span
-                    className={`h-2 w-2 shrink-0 rounded-full ${
-                      p.enabled || (p.id !== "comtrade" && p.has_key_configured)
-                        ? "bg-[var(--accent)]"
-                        : "bg-[var(--ink-muted)]"
-                    }`}
-                  />
-                  <div className="min-w-0">
-                    <p className="font-medium text-white">{p.name}</p>
-                    <p className="font-mono text-[0.65rem] text-[var(--ink-muted)]" dir="ltr">
-                      {p.id}
-                    </p>
-                    {p.usage_note_fa ? (
-                      <p className="mt-1 text-xs text-[var(--ink-muted)]">{p.usage_note_fa}</p>
-                    ) : null}
-                  </div>
-                </div>
-                <span className="text-xs font-semibold text-[var(--ink-soft)]">
-                  {p.enabled ? fa.admin.enabled : fa.admin.disabled}
-                  {" · "}
-                  {fa.providerStatus[p.status] ?? p.status}
-                  {p.has_key_configured ? (
-                    <span className="text-[var(--ok)]"> · key✓ ({fa.admin.keySaved})</span>
-                  ) : p.id === "comtrade" ? (
-                    " · no key required"
-                  ) : (
-                    " · —"
-                  )}
-                </span>
-              </div>
-              <div>
-                <label className="nova-label" htmlFor={`provider-key-${p.id}`}>
-                  {fa.admin.apiKey} — {p.name}
-                </label>
-                <input
-                  id={`provider-key-${p.id}`}
-                  className="nova-input"
-                  type="password"
-                  autoComplete="off"
-                  placeholder={fa.admin.providerKeyPlaceholder}
-                  value={providerKeyDrafts[p.id] ?? ""}
-                  onChange={(e) =>
-                    setProviderKeyDrafts((prev) => ({
-                      ...prev,
-                      [p.id]: e.target.value,
-                    }))
-                  }
-                />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {p.id === "comtrade" ? (
-                  <button
-                    type="button"
-                    className="nova-btn-primary !px-4 !py-2 text-xs"
-                    disabled={busy}
-                    onClick={() => void toggleProvider(p.id, !p.enabled)}
-                  >
-                    {p.enabled ? fa.admin.disableProvider : fa.admin.enableProvider}
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="nova-btn-primary !px-4 !py-2 text-xs"
-                  disabled={busy}
-                  onClick={() => void saveProviderKey(p.id)}
-                >
-                  {fa.admin.saveProviderKey}
-                </button>
-                <button
-                  type="button"
-                  className="nova-btn-ghost !px-4 !py-2 text-xs"
-                  disabled={busy || !p.has_key_configured}
-                  onClick={() => void saveProviderKey(p.id, true)}
-                >
-                  {fa.admin.clearProviderKey}
-                </button>
-                <button
-                  type="button"
-                  className="nova-btn-ghost !px-4 !py-2 text-xs"
-                  disabled={busy}
-                  onClick={() => void testProvider(p.id)}
-                >
-                  {p.id === "comtrade" ? "آزمون پیش‌نمایش عمومی" : "بررسی وجود کلید"}
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
+      <section className="nova-panel min-w-0 space-y-2 overflow-hidden p-4 sm:p-5">
+        <h2 className="font-semibold text-white">جست‌وجوی بدون کلید</h2>
+        <p className="text-sm text-[var(--ink-muted)]">
+          کشف وب از منابع بدون هزینه انجام می‌شود. کلید Tavily، Exa، WITS یا Comtrade برای پژوهش لازم نیست و از اینجا ارسال نمی‌شود.
+        </p>
         <p role="status" className="break-words text-sm text-[var(--ink-muted)]">{message}</p>
       </section>
 
@@ -514,7 +277,7 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
               disabled={busy}
               onClick={() => void testConnection()}
             >
-              بررسی وجود کلید مدل
+              آزمون اتصال مدل
             </button>
           </div>
           <p role="status" className="break-words text-sm text-[var(--ink-muted)]">

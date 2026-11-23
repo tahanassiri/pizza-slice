@@ -65,6 +65,7 @@ class StubTradeProvider:
 
 class StubLLMProvider:
     id = "stub_llm"
+    research_cleared = False
 
     def classify_hs(self, product: str, hs_hint: str | None) -> tuple[str | None, str]:
         if hs_hint and hs_hint.strip():

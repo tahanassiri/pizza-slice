@@ -55,17 +55,40 @@ def test_admin_model_key_presence_is_not_connection_success(client, admin_token)
     )
     assert stored.status_code == 200
     assert stored.json()["has_key_configured"] is True
+    from app.db.session import SessionLocal
+    from app.services.admin_service import read_model_verification
+
+    with SessionLocal() as db:
+        assert read_model_verification(db, model) == "Configured"
 
     with patch("httpx.Client") as provider_http:
+        stored = client.put(
+            "/api/admin/model/key", headers=headers, json={"model": model, "api_key": secret}
+        )
+    provider_http.assert_not_called()
+    assert stored.status_code == 200
+
+    class Probe:
+        status_code = 200
+        text = '{"candidates":[]}'
+
+        def json(self):
+            return {"candidates": []}
+
+    with patch("httpx.Client") as provider_http:
+        post = provider_http.return_value.__enter__.return_value.post
+        post.return_value = Probe()
         result = client.post(
             "/api/admin/test-connection",
             headers=headers,
             json={"provider_id": f"model:{model}"},
         )
-    provider_http.assert_not_called()
+    assert post.called
     assert result.status_code == 200
-    assert result.json()["ok"] is False
-    assert result.json()["checked"] is False
+    body = result.json()
+    assert body["ok"] is False
+    assert body["checked"] is True
+    assert body["connection_status"] == "Billing permission required"
     assert secret not in result.text
 
 

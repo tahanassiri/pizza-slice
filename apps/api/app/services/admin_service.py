@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.core.security import encrypt_secret
 from app.models.entities import AppMeta, ProviderSetting
 from app.providers.llm_catalog import all_models, catalog_grouped, models_by_id
+from app.providers.model_clearance import is_research_cleared
 from app.schemas.contracts import (
     AdminSettingsOut,
     LlmModelOptionOut,
@@ -77,6 +78,8 @@ def trade_sources_view(db: Session) -> list[TradeSourceStatusOut]:
     now = datetime.now(timezone.utc).isoformat()
     model = get_selected_model(db)
     has_key = model_has_key(db, model)
+    verification = read_model_verification(db, model)
+    cleared = is_research_cleared(model, verification)
     return [
         TradeSourceStatusOut(
             id="free_web",
@@ -89,12 +92,16 @@ def trade_sources_view(db: Session) -> list[TradeSourceStatusOut]:
         TradeSourceStatusOut(
             id="active_llm",
             name=f"Active research LLM ({model})",
-            status="active" if has_key else "limited",
+            status="active" if cleared else "limited",
             optional=False,
             last_checked=now,
             note_fa=(
-                "مدل تصمیم‌یار تحقیق"
-                + (" — کلید ذخیره شده (Saved ≠ Verified)" if has_key else " — بدون کلید: راهبرد اکتشافی")
+                "مدل تصمیم‌یار تحقیق — "
+                + (
+                    f"وضعیت اتصال: {verification}. پژوهش فقط پس از تأیید بدون‌هزینه ارسال می‌شود."
+                    if has_key
+                    else "بدون مدل بدون‌هزینهٔ تأییدشده، پژوهش مسدود است"
+                )
             ),
         ),
     ]
@@ -199,7 +206,7 @@ def settings_view(db: Session) -> AdminSettingsOut:
         error_history=[
             {
                 "at": datetime.now(timezone.utc).isoformat(),
-                "message_fa": "بدون کلید نسخهٔ فعال، ایجنت با راهبرد اکتشافی وب رایگان ادامه می‌دهد.",
+                "message_fa": "بدون مدل بدون‌هزینهٔ تأییدشده پژوهش مسدود می‌ماند. راهبرد اکتشافی اجرا نمی‌شود.",
             }
         ],
         is_mock_ui=False,
@@ -278,90 +285,140 @@ def set_model_api_key(db: Session, model_id: str, api_key: str | None) -> dict:
     else:
         row.value = encrypted
     db.commit()
+    _write_model_verification(db, model_id, "Configured")
     return {"model": model_id, "has_key_configured": True}
+
+
+def _verify_key(model_id: str) -> str:
+    return f"llm_verify::{model_id}"
+
+
+def read_model_verification(db: Session, model_id: str) -> str:
+    row = db.get(AppMeta, _verify_key(model_id))
+    if not row or not row.value:
+        return "Configured" if model_has_key(db, model_id) else "Failed"
+    try:
+        import json
+
+        payload = json.loads(row.value)
+    except json.JSONDecodeError:
+        return "Failed"
+    status = str(payload.get("connection_status") or "Failed")
+    from app.providers.model_clearance import CONNECTION_STATUSES
+
+    if status not in CONNECTION_STATUSES:
+        return "Failed"
+    return status
+
+
+def _write_model_verification(db: Session, model_id: str, status: str, *, detail: str = "") -> None:
+    import json
+
+    payload = json.dumps(
+        {
+            "connection_status": status,
+            "detail": detail[:300],
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        },
+        ensure_ascii=False,
+    )
+    key = _verify_key(model_id)
+    row = db.get(AppMeta, key)
+    if row:
+        row.value = payload
+    else:
+        db.add(AppMeta(key=key, value=payload))
+    db.commit()
+
+
+def _connection_message(model_id: str, status: str, *, http_status: int | None) -> str:
+    http = f"HTTP {http_status}" if http_status is not None else "بدون پاسخ HTTP"
+    labels = {
+        "Verified": f"Verified — مدل «{model_id}» به‌عنوان بدون‌هزینه تأیید شد ({http}).",
+        "Billing permission required": (
+            f"Billing permission required — نقطهٔ پایانی «{model_id}» پاسخ داد ({http}) "
+            "اما رایگان‌بودن درخواست اثبات نشد. پژوهش خودکار به این مدل سوئیچ نمی‌شود."
+        ),
+        "Rate-limited": f"Rate-limited — سهمیه یا نرخ «{model_id}» محدود است ({http}).",
+        "Unavailable": f"Unavailable — مدل «{model_id}» در نقطهٔ پایانی در دسترس نیست ({http}). شناسه کاتالوگ معتبر فرض نشد.",
+        "Failed": f"Failed — آزمون اتصال «{model_id}» ناموفق بود ({http}).",
+        "Configured": f"Configured — کلید «{model_id}» ذخیره شده و هنوز آزمون زنده نشده است.",
+    }
+    return labels.get(status, f"{status} — {http}")
 
 
 def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
     ensure_providers(db)
     # Model-version test: provider_id may be "model:<id>"
     if provider_id.startswith("model:"):
+        from app.providers.keyed import probe_selected_endpoint
+        from app.providers.model_clearance import classify_probe, is_research_cleared
+
         model_id = provider_id.removeprefix("model:")
-        if model_id not in models_by_id():
-            return TestConnectionOut(ok=False, message_fa="مدل یافت نشد.")
+        meta = models_by_id().get(model_id)
+        if meta is None:
+            return TestConnectionOut(
+                ok=False,
+                checked=False,
+                connection_status="Unavailable",
+                message_fa="شناسه مدل در فهرست محلی نیست و معتبر فرض نمی‌شود.",
+            )
         if not model_has_key(db, model_id):
             return TestConnectionOut(
                 ok=False,
+                checked=False,
+                connection_status="Failed",
                 message_fa="کلید این نسخه مدل پیکربندی نشده است.",
             )
+        key = get_model_api_key(db, model_id) or ""
+        probe = probe_selected_endpoint(meta.provider, model_id, key)
+        status = classify_probe(
+            provider=meta.provider,
+            model_id=model_id,
+            http_status=probe.get("http_status"),
+            body=str(probe.get("body") or ""),
+            error=probe.get("error"),
+        )
+        _write_model_verification(db, model_id, status, detail=str(probe.get("error") or probe.get("http_status") or ""))
+        cleared = is_research_cleared(model_id, status)
         return TestConnectionOut(
-            ok=False,
-            message_fa=f"کلید نسخه «{model_id}» ذخیره شده است. اتصال و اعتبار کلید بررسی نشد.",
+            ok=cleared,
+            checked=True,
+            connection_status=status,
+            message_fa=_connection_message(model_id, status, http_status=probe.get("http_status")),
         )
 
     row = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == provider_id))
     if not row:
         return TestConnectionOut(ok=False, message_fa="ارائه‌دهنده یافت نشد.")
 
-    # Comtrade: key never required — probe public preview when enabled or on demand
-    if provider_id == "comtrade":
-        try:
-            import httpx
-
-            with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-                r = client.get(
-                    "https://comtradeapi.un.org/public/v1/preview/C/A/HS",
-                    params={
-                        "reporterCode": 784,
-                        "period": 2022,
-                        "partnerCode": 0,
-                        "cmdCode": "TOTAL",
-                        "flowCode": "M",
-                        "maxRecords": 1,
-                    },
-                )
-            if r.status_code == 200:
-                row.status = "ok" if row.enabled else "limited"
-                db.commit()
-                return TestConnectionOut(
-                    ok=True,
-                    checked=True,
-                    message_fa=(
-                        "پیش‌نمایش عمومی Comtrade پاسخ HTTP 200 داد. "
-                        + (
-                            "فعال است."
-                            if row.enabled
-                            else "فعلاً غیرفعال است (کلید لازم نیست — از پنل فعال کنید)."
-                        )
-                    ),
-                )
-            row.status = "error"
-            db.commit()
-            return TestConnectionOut(
-                ok=False,
-                checked=True,
-                message_fa=f"پیش‌نمایش Comtrade پاسخ نداد ({r.status_code}).",
-            )
-        except Exception as exc:
-            row.status = "error"
-            db.commit()
-            return TestConnectionOut(
-                ok=False,
-                checked=True,
-                message_fa=f"آزمون Comtrade ناموفق ({type(exc).__name__}).",
-            )
+    if provider_id in {"comtrade", "tavily", "exa", "wits"}:
+        row.enabled = 0
+        row.status = "inactive"
+        db.commit()
+        return TestConnectionOut(
+            ok=False,
+            checked=False,
+            connection_status="Unavailable",
+            message_fa="این ارائه‌دهنده در مسیر تحقیق فعال نیست و آزمونی به API آن فرستاده نشد.",
+        )
 
     if not row.encrypted_api_key:
         row.status = "error"
         db.commit()
         return TestConnectionOut(
             ok=False,
+            checked=False,
+            connection_status="Failed",
             message_fa="کلید پیکربندی نشده است.",
         )
     row.status = "untested"
     db.commit()
     return TestConnectionOut(
         ok=False,
-        message_fa="کلید سمت سرور ذخیره شده است. اتصال و اعتبار کلید بررسی نشد.",
+        checked=False,
+        connection_status="Configured",
+        message_fa="کلید سمت سرور ذخیره شده است. این ردیف مسیر پژوهش مدل نیست.",
     )
 
 

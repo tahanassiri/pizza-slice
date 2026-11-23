@@ -15,6 +15,7 @@ from app.services.feasibility_calc import default_feasibility_template, recomput
 from app.tools import budget as budget_mod
 from app.tools.credibility import assess_credibility, cross_check_claims
 from app.tools.extract import extract_claims
+from app.tools.budget import guarded_model_call
 from app.tools.free_web import free_web_search
 from app.tools.page_fetch import fetch_page
 from app.tools.verify_company import verify_company
@@ -77,7 +78,11 @@ class ToolExecutor:
             )
 
         spent = dict(result.spent or {})
-        if call.tool == "classify_product" and "model" not in spent:
+        if (
+            call.tool == "classify_product"
+            and not (result.data or {}).get("budget_reserved")
+            and "model" not in spent
+        ):
             spent["model"] = 1
         for kind, units in spent.items():
             try:
@@ -113,11 +118,12 @@ class ToolExecutor:
                     error_code="INSUFFICIENT_EVIDENCE",
                     spent={"search": 1},
                 )
-            # Primary: no-cost free web. Never invent results.
+            followups = args.get("followups") if isinstance(args.get("followups"), list) else None
             return free_web_search(
                 str(args.get("query") or ""),
-                max_results=int(args.get("max_results") or 5),
+                max_results=min(8, int(args.get("max_results") or 5)),
                 country=args.get("country"),
+                followups=[str(item) for item in (followups or [])][:2],
             )
         if tool == "fetch_page":
             if stub:
@@ -237,18 +243,42 @@ class ToolExecutor:
             product = str(args.get("product") or "")
             hs_hint = args.get("hs_hint")
             hs, conf = None, "unknown"
-            if self.llm and hasattr(self.llm, "classify_hs"):
-                hs, conf = self.llm.classify_hs(product, hs_hint)
+            reserved = False
+            cleared = bool(self.llm) and bool(getattr(self.llm, "research_cleared", False))
+            stub_llm = bool(self.llm) and getattr(self.llm, "id", "") == "stub_llm"
+            if self.llm and hasattr(self.llm, "classify_hs") and (cleared or stub_llm):
+                hs, conf = guarded_model_call(
+                    self.db,
+                    self.run_id,
+                    "classify",
+                    lambda: self.llm.classify_hs(product, hs_hint),  # type: ignore[union-attr]
+                    provider_id=str(getattr(self.llm, "id", "llm")),
+                )
+                reserved = True
+                self.budget = budget_mod.ensure_run_budget(self.db, self.run_id)
             elif hs_hint:
                 hs, conf = str(hs_hint), "medium"
             return ToolResult(
                 tool="classify_product",
                 ok=True,
                 message_fa="طبقه‌بندی محصول انجام شد.",
-                data={"hs_code": hs, "hs_confidence": conf, "product": product},
-                spent={"model": 1},
+                data={
+                    "hs_code": hs,
+                    "hs_confidence": conf,
+                    "product": product,
+                    "budget_reserved": reserved,
+                },
+                spent={},
             )
         if tool in {"research_regulations", "research_logistics"}:
+            if stub:
+                return ToolResult(
+                    tool=tool,
+                    ok=False,
+                    message_fa="حالت stub — جست‌وجوی مقررات/حمل انجام نشد.",
+                    error_code="INSUFFICIENT_EVIDENCE",
+                    spent={"search": 1},
+                )
             if tool == "research_regulations":
                 q = (
                     f"{args.get('product')} {args.get('hs') or ''} import regulations "

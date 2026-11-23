@@ -7,11 +7,11 @@ import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from app.agents.market_scorer import cards_to_markets, score_from_trade_records
+from app.agents.market_scorer import score_from_evidence_markets, score_from_trade_records
 from app.agents.planner import build_research_plan
 from app.core.config import get_settings
 from app.db.session import SessionLocal
-from app.events.store import append_event, list_events
+from app.events.store import list_events
 from app.jobs.durable import claim_task, create_task, finish_task, recover_stale_leases
 from app.knowledge.repository import KnowledgeRepository
 from app.models.entities import KnowledgeItem, ProviderSetting, Run, UsageAudit
@@ -105,21 +105,24 @@ def test_s9_2_different_products_distinct_memory_and_sector_label():
         quality_status="partial",
         product="raisins",
     )
-    ma = cards_to_markets(cards_a, reference_year=2022, source_name="WITS")
-    mb = cards_to_markets(cards_b, reference_year=2022, source_name="WITS")
-    assert any(x.key == "data_scope" and x.value == "sector" for x in ma[0].metrics)
-    # Evidence must mention the specific product — not a shared generic blob only
-    assert any("pistachio" in e.lower() or "پسته" in e for m in ma for e in m.evidence) or any(
-        "pistachio" in " ".join(m.evidence) for m in ma
+    assert cards_a and cards_b
+    assert all(card.data_scope == "sector" for card in cards_a)
+    assert all(card.recommendation == "watch" for card in cards_a + cards_b)
+    assert all(
+        next(item for item in card.criteria if item.key == "demand").score_value is None
+        for card in cards_a
     )
-    assert any("raisins" in " ".join(m.evidence).lower() for m in mb)
+    assert any("pistachio" in " ".join(card.rationale_fa).lower() for card in cards_a)
+    assert any("raisins" in " ".join(card.rationale_fa).lower() for card in cards_b)
+    ma = [{"product": "pistachio", "data_scope": "sector"}]
+    mb = [{"product": "raisins", "data_scope": "sector"}]
 
     db = SessionLocal()
     try:
         repo = KnowledgeRepository(db)
         repo.save_public(
             kind="market_stats",
-            payload={"markets": [m.model_dump() for m in ma], "product": "pistachio"},
+            payload={"markets": ma, "product": "pistachio"},
             product="pistachio",
             origin="ایران",
             metric="ranked_markets",
@@ -127,7 +130,7 @@ def test_s9_2_different_products_distinct_memory_and_sector_label():
         )
         repo.save_public(
             kind="market_stats",
-            payload={"markets": [m.model_dump() for m in mb], "product": "raisins"},
+            payload={"markets": mb, "product": "raisins"},
             product="raisins",
             origin="ایران",
             metric="ranked_markets",
@@ -155,8 +158,10 @@ def test_s9_3_reference_year_on_markets_and_stale_flag():
         quality_status="partial",
         product="پسته",
     )
-    markets = cards_to_markets(cards, reference_year=2022, source_name="WITS Trade Stats")
-    assert any(m.key == "reference_year" and m.value == "2022" for m in markets[0].metrics)
+    demand = next(item for item in cards[0].criteria if item.key == "demand")
+    assert demand.date_scope == "2022"
+    assert demand.score_value is None
+    assert cards[0].data_scope == "sector"
     # stale knowledge item
     db = SessionLocal()
     try:
@@ -262,24 +267,33 @@ def test_s9_6_unknown_criteria_not_hidden():
     keys = {c.key for c in cards[0].criteria}
     assert {"demand", "legal", "logistics", "payment", "competition", "access"} <= keys
     unknown_keys = {c.key for c in cards[0].criteria if c.unknown}
-    assert "legal" in unknown_keys
-    assert "logistics" in unknown_keys
-    assert "payment" in unknown_keys
-    markets = cards_to_markets(cards, reference_year=2022, source_name="WITS")
-    assert markets[0].unknowns, "unknowns must surface on Market cards"
+    assert {"legal", "logistics", "payment", "access", "demand"} <= unknown_keys
+    assert all(c.score_value not in {0.4, 0.5, 0.55} for c in cards[0].criteria)
+    assert any(c.note_fa for c in cards[0].criteria if c.unknown)
 
 
 # --- §9.7 recommended ≤3 and risky 1–2 separated ---
 def test_s9_7_recommended_and_risky_split():
-    cards = score_from_trade_records(
-        _sector_records(),
-        data_scope="sector",
-        source_name="WITS",
-        reference_year=2022,
-        quality_status="partial",
-        product="پسته",
-    )
-    markets = cards_to_markets(cards, reference_year=2022, source_name="WITS")
+    def row(code: str, evidence_id: str) -> dict:
+        return {
+            "id": evidence_id,
+            "source_url": f"https://example.org/{code.lower()}",
+            "period": "2023",
+            "product": "پسته",
+            "country": code,
+            "data_scope": "qualitative",
+            "statement": f"note {code}",
+        }
+
+    index = {f"ev_{code}": row(code, f"ev_{code}") for code in ("DE", "AE", "TR", "IQ", "OM")}
+    proposals = [
+        {"country_code": "DE", "recommendation": "recommended", "evidence_ids": ["ev_DE"], "data_scope": "qualitative"},
+        {"country_code": "AE", "recommendation": "recommended", "evidence_ids": ["ev_AE"], "data_scope": "qualitative"},
+        {"country_code": "TR", "recommendation": "recommended", "evidence_ids": ["ev_TR"], "data_scope": "qualitative"},
+        {"country_code": "IQ", "recommendation": "recommended", "evidence_ids": ["ev_IQ"], "data_scope": "qualitative"},
+        {"country_code": "OM", "recommendation": "risky", "evidence_ids": ["ev_OM"], "data_scope": "qualitative", "risks": ["پرریسک پرداخت"]},
+    ]
+    markets = score_from_evidence_markets(proposals, product="پسته", evidence_index=index)
     rec = [
         m
         for m in markets
@@ -290,9 +304,47 @@ def test_s9_7_recommended_and_risky_split():
         for m in markets
         if any(x.key == "recommendation" and x.value == "risky" for x in m.metrics)
     ]
-    assert 1 <= len(rec) <= 3
-    assert 1 <= len(risky) <= 2
-    assert any("پرریسک" in r or "هشدار" in r for m in risky for r in m.risks)
+    assert len(rec) == 3
+    assert len(risky) == 1
+    assert any("پرریسک" in risk or "هشدار" in risk for market in risky for risk in market.risks)
+    assert all(
+        next(item for item in market.metrics if item.key == "score_total").value == "نامشخص"
+        for market in markets
+    )
+    sector = {
+        "ev_s": {
+            "id": "ev_s",
+            "source_url": "https://wits.example/sector",
+            "period": "2022",
+            "product": "پسته",
+            "country": "AE",
+            "data_scope": "sector",
+            "statement": "sector aggregate",
+        }
+    }
+    assert (
+        score_from_evidence_markets(
+            [
+                {
+                    "country_code": "AE",
+                    "recommendation": "recommended",
+                    "evidence_ids": ["ev_s"],
+                    "data_scope": "hs6",
+                }
+            ],
+            product="پسته",
+            evidence_index=sector,
+        )
+        == []
+    )
+    assert (
+        score_from_evidence_markets(
+            [{"country_code": "AE", "recommendation": "recommended", "evidence_ids": ["missing"]}],
+            product="پسته",
+            evidence_index={},
+        )
+        == []
+    )
 
 
 # --- §9.8 no buyer research before country select ---
@@ -305,10 +357,9 @@ def test_s9_8_buyers_gate_requires_selection(client):
     assert snap.get("buyer_search") is None
     assert snap["run"]["selected_country"] is None
     # selecting starts job (async); still no invent companies in stub
-    after = client.post(f"/api/runs/{rid}/select-country", json={"country_code": "AE"}).json()
-    assert after["run"]["selected_country"] == "AE"
-    assert after["buyer_search"] is not None
-    assert after["buyer_search"]["status"] in {"queued", "running", "partial", "completed", "failed"}
+    rejected = client.post(f"/api/runs/{rid}/select-country", json={"country_code": "AE"})
+    assert rejected.status_code == 422
+    assert rejected.json()["code"] == "INVALID_COUNTRY"
 
 
 # --- §9.9 seller page / search title alone ≠ source_backed buyer ---

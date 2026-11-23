@@ -11,6 +11,7 @@ const tone: Record<Status, string> = {
   rate_limited: "bg-[var(--warn-soft)] text-[var(--warn)]",
   provider_unavailable: "bg-[var(--danger-soft)] text-[var(--danger)]",
   cancelled: "bg-fog text-ink-muted",
+  interrupted: "bg-[var(--warn-soft)] text-[var(--warn)]",
 };
 
 export function RunStatus({ status }: { status: Status }) {

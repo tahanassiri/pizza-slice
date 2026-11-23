@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.events.broadcaster import broadcaster
 from app.events.store import append_event
-from app.jobs.durable import claim_task, create_task, finish_task, recover_stale_leases
+from app.jobs.durable import claim_task, create_task, finish_task, latest_task_for_run, recover_stale_leases
 from app.models.entities import Run
 from app.schemas.contracts import Report, RunEventOut, Source
 from app.tools.budget import ensure_global_budget, ensure_run_budget
@@ -74,7 +74,8 @@ async def _emit(db: Session, run: Run, **kwargs) -> RunEventOut:
     } else phase
     kwargs["phase"] = phase
 
-    event = append_event(db, run_id=run.id, event_id=_eid(), **kwargs)
+    event_id = kwargs.pop("event_id", None) or _eid()
+    event, created = append_event(db, run_id=run.id, event_id=event_id, **kwargs)
     run.phase = phase
     status = kwargs["status"]
     if run.phase != "report" and status in {"completed", "partial"}:
@@ -88,11 +89,20 @@ async def _emit(db: Session, run: Run, **kwargs) -> RunEventOut:
         run.error_retryable = (
             1
             if kwargs["error_code"]
-            in {"PROVIDER_UNAVAILABLE", "RATE_LIMITED", "INSUFFICIENT_EVIDENCE", "BUDGET_EXCEEDED"}
+            in {
+                "PROVIDER_UNAVAILABLE",
+                "RATE_LIMITED",
+                "INSUFFICIENT_EVIDENCE",
+                "BUDGET_EXCEEDED",
+                "LLM_UNAVAILABLE",
+                "LLM_INVALID",
+                "LEASE_LOST",
+            }
             else 0
         )
     db.commit()
-    await broadcaster.publish(run.id, event.model_dump())
+    if created:
+        await broadcaster.publish(run.id, event.model_dump())
     delay = get_settings().orchestrator_step_delay_ms / 1000.0
     if delay > 0:
         await asyncio.sleep(delay)
@@ -109,10 +119,21 @@ async def run_agentic_pipeline(run_id: str) -> None:
         if not run:
             return
 
-        task = create_task(db, run_id=run_id, stage="intake", checkpoint={"v": 1})
+        task = latest_task_for_run(db, run_id)
+        if task is None or task.status not in {"queued", "interrupted"}:
+            task = create_task(
+                db,
+                run_id=run_id,
+                stage="market_research",
+                checkpoint={"version": 2, "completed_steps": []},
+            )
         claimed = claim_task(db, task.id, _WORKER_ID)
         if not claimed:
             return
+        try:
+            checkpoint = json.loads(claimed.checkpoint_json or "{}")
+        except json.JSONDecodeError:
+            checkpoint = {}
 
         ensure_run_budget(db, run_id)
         bundle = _resolve_providers(db)
@@ -147,7 +168,15 @@ async def run_agentic_pipeline(run_id: str) -> None:
             message_fa="ورود درخواست تکمیل شد",
         )
 
-        result = await run_market_research(db, run, executor, _emit)
+        result = await run_market_research(
+            db,
+            run,
+            executor,
+            _emit,
+            checkpoint=checkpoint,
+            task_id=claimed.id,
+            lease_owner=_WORKER_ID,
+        )
         markets = result.get("markets") or []
         sources = result.get("sources") or []
         recommended = result.get("recommended") or markets[:3]
@@ -159,22 +188,35 @@ async def run_agentic_pipeline(run_id: str) -> None:
         )
 
         if not markets:
+            stop = str(result.get("stop_reason") or "")
+            blocked = stop in {"LLM_UNAVAILABLE", "LLM_INVALID", "LEASE_LOST"}
             await _emit(
                 db,
                 run,
                 phase="conclude",
                 status="partial",
-                message_fa="اطلاعات ناکافی برای پیشنهاد بازار",
-                error_code="INSUFFICIENT_EVIDENCE",
+                message_fa=(
+                    "پژوهش مسدود است و قابل بازیابی است"
+                    if blocked
+                    else "اطلاعات ناکافی برای پیشنهاد بازار"
+                ),
+                error_code=stop if blocked else "INSUFFICIENT_EVIDENCE",
+                event_id=f"evt_{run.id}_conclude",
+            )
+            summary = (
+                "پژوهش بازار مسدود است: مدل بدون‌هزینهٔ تأییدشده در دسترس نیست یا پاسخ آن قابل اجرا نبود. "
+                "این وضعیت قابل بازیابی است. تصمیم اکتشافی به‌جای مدل اجرا نشد و عدد/شرکت ساخته نشد."
+                if blocked
+                else (
+                    "در این اجرا شواهد کافی برای رتبه‌بندی بازار به‌دست نیامد "
+                    f"(وضعیت داده: {quality}). عدد/شرکت ساختگی تولید نشد."
+                )
             )
             report = Report(
                 run_id=run.id,
                 product=run.product,
                 origin_country=run.origin_country,
-                summary_fa=(
-                    "در این اجرا شواهد کافی برای رتبه‌بندی بازار به‌دست نیامد "
-                    f"(وضعیت داده: {quality}). عدد/شرکت ساختگی تولید نشد."
-                ),
+                summary_fa=summary,
                 markets=[],
                 selected_country=None,
                 buyers=[],
@@ -183,7 +225,7 @@ async def run_agentic_pipeline(run_id: str) -> None:
                     "بدون جعل آمار یا خریدار",
                     "محاسبه مالی فقط پس از ورود اعداد کاربر",
                     f"کیفیت داده تجارت: {quality}",
-                    "مسیر: ایجنت تحقیقاتی (agentic)",
+                    "تصمیم تحقیق فقط از مدل تأییدشده می‌آید؛ در نبود آن وضعیت مسدود است",
                 ],
                 sources=_merge_sources(sources),
                 collected_at=_iso(datetime.now(timezone.utc)),
@@ -192,8 +234,8 @@ async def run_agentic_pipeline(run_id: str) -> None:
             run.report_json = report.model_dump_json()
             run.status = "partial"
             run.phase = "report"
-            run.error_code = "INSUFFICIENT_EVIDENCE"
-            run.error_message_fa = "شواهد کافی نیست"
+            run.error_code = stop if blocked else "INSUFFICIENT_EVIDENCE"
+            run.error_message_fa = "پژوهش مسدود است" if blocked else "شواهد کافی نیست"
             run.error_retryable = 1
             db.commit()
             await _emit(
@@ -203,7 +245,14 @@ async def run_agentic_pipeline(run_id: str) -> None:
                 status="partial",
                 message_fa="گزارش ناقص آماده شد (بدون بازار رتبه‌بندی‌شده)",
             )
-            finish_task(db, task.id, status="completed", checkpoint={"markets": 0})
+            finish_task(
+                db,
+                task.id,
+                status="blocked" if blocked else "completed",
+                checkpoint={"version": 2, "markets": 0, "stop_reason": stop},
+                error_code=run.error_code,
+                error_message_fa=run.error_message_fa,
+            )
             return
 
         await _emit(

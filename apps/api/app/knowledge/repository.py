@@ -129,11 +129,22 @@ class KnowledgeRepository:
         published_period: str | None = None,
     ) -> KnowledgeItem:
         # Refuse private financial keys
-        forbidden = {"target_sell_price", "fx_rate", "user_contact", "password", "api_key"}
-        blob = json.dumps(payload, ensure_ascii=False)
+        forbidden = {"target_sell_price", "fx_rate", "user_contact", "password", "api_key", "private_contact"}
+        blob = json.dumps(payload, ensure_ascii=False).lower()
         for bad in forbidden:
-            if bad in blob.lower():
+            if bad in blob:
                 raise ValueError(f"refusing to store private field marker: {bad}")
+        payload = dict(payload)
+        payload.setdefault(
+            "_provenance",
+            {
+                "kind": kind,
+                "origin_run_id": origin_run_id,
+                "published_period": published_period or period,
+                "product": product,
+            },
+        )
+        blob = json.dumps(payload, ensure_ascii=False)
 
         key = canonical_key(
             kind=kind,

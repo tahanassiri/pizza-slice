@@ -20,8 +20,25 @@ CATEGORY_FA = {
     "distributor": "توزیع‌کننده",
     "wholesaler": "عمده‌فروش",
     "industrial_end_user": "مصرف‌کننده صنعتی",
+    "seller": "فروشنده",
+    "directory": "فهرست",
     "unknown": "نقش نامشخص",
 }
+
+ROLE_QUERIES = (
+    ("importer", "{product} importer {country}"),
+    ("distributor", "{product} distributor {country}"),
+    ("wholesaler", "{product} wholesaler {country}"),
+    ("industrial_end_user", "{product} industrial buyer {country}"),
+)
+
+_SKIP_HOSTS = (
+    "wikipedia.org",
+    "duckduckgo.com",
+    "google.com",
+    "bing.com",
+    "yahoo.com",
+)
 
 # Map verify statuses onto FE contract
 _STATUS_MAP = {
@@ -38,6 +55,72 @@ def _domain(url: str | None) -> str:
     return urlparse(url).netloc.lower().removeprefix("www.")
 
 
+def candidates_from_search_hits(results: list[dict], *, country: str, product: str, role: str) -> list:
+    """Companies only from source URLs. Names come from the result title, never invented contacts."""
+
+    from app.schemas.contracts import Buyer, Source
+
+    found = []
+    for item in results:
+        url = str(item.get("url") or "")
+        if not url.startswith("http"):
+            continue
+        host = _domain(url)
+        if not host or any(host.endswith(skip) or skip in host for skip in _SKIP_HOSTS):
+            continue
+        title = str(item.get("title") or "").strip()
+        name = title.split(" - ")[0].split("|")[0].strip()[:180]
+        if len(name) < 2:
+            continue
+        snippet = str(item.get("snippet") or item.get("reliability_note") or "")
+        source = Source(
+            url=url,
+            title=title or url,
+            publisher=str(item.get("publisher") or host),
+            fetched_at=str(item.get("fetched_at") or ""),
+            provider=str(item.get("provider") or "free_web"),
+            reliability_note="نتیجه جست‌وجو — نقش هنوز تأیید نشده",
+        )
+        buyer = Buyer(
+            company_name=name,
+            website=url,
+            country=country,
+            business_type=CATEGORY_FA.get(role, CATEGORY_FA["unknown"]),
+            fit_evidence=[snippet[:300]] if snippet else [f"منبع: {url}"],
+            contact=None,
+            verification_status="unverified",
+            sources=[source],
+        )
+        found.append(buyer)
+    return found
+
+
+def collect_buyer_hits(executor: ToolExecutor | None, *, product: str, country_code: str) -> tuple[list, list]:
+    """Role queries are a fixed tool checklist, not a model decision."""
+
+    if executor is None:
+        return [], []
+    buyers = []
+    sources = []
+    for role, template in ROLE_QUERIES:
+        result = executor.execute(
+            ToolCall(
+                tool="search_web",
+                args={
+                    "query": template.format(product=product, country=country_code),
+                    "country": country_code,
+                    "max_results": 4,
+                },
+            )
+        )
+        hits = (result.data or {}).get("results") or []
+        parsed = candidates_from_search_hits(hits, country=country_code, product=product, role=role)
+        buyers.extend(parsed)
+        for buyer in parsed:
+            sources.extend(buyer.sources)
+    return buyers, sources
+
+
 def discover_and_verify_buyers(
     db: Session,
     *,
@@ -50,12 +133,12 @@ def discover_and_verify_buyers(
 ) -> tuple[list[Buyer], list[Source], str, str | None, str | None]:
     """Returns buyers, sources, status, error_code, error_message_fa."""
 
-    # 1) raw search
-    if not hasattr(search_provider, "search_buyers"):
-        return [], [], "partial", "PROVIDER_UNAVAILABLE", "ارائه‌دهنده جست‌وجوی خریدار نیست."
-
+    # Discovery goes through allowlisted web tools. Wiki search_buyers is not a candidate source.
+    del search_provider
     try:
-        raw = search_provider.search_buyers(product, country_code)
+        raw_buyers, sources = collect_buyer_hits(
+            executor, product=product, country_code=country_code
+        )
     except Exception as exc:
         return (
             [],
@@ -64,16 +147,14 @@ def discover_and_verify_buyers(
             "PROVIDER_UNAVAILABLE",
             f"جست‌وجوی خریدار ناموفق ({type(exc).__name__}).",
         )
-
-    raw_buyers = list(raw.buyers or [])
-    sources: list[Source] = list(raw.sources or [])
+    sources = list(sources)
     if not raw_buyers:
         return (
             [],
             sources,
             "partial",
-            raw.error_code or "NO_BUYERS",
-            raw.message_fa or "خریداری یافت نشد.",
+            "NO_BUYERS",
+            "خریدار قابل استنادی از نتایج ابزار پیدا نشد.",
         )
 
     published: list[Buyer] = []
