@@ -55,8 +55,12 @@ def shortlist_evidence(rows: list[dict], candidates: dict, origin: str, hs6: str
             and trade.get("reporter") == origin_code and trade.get("partner") == destination
         ):
             by_country.setdefault(destination, set()).add(row["id"])
-    supported = [refs for refs in by_country.values() if refs]
-    return set().union(*supported) if len(supported) >= 2 else set()
+    priority = {
+        row["id"]: ((row.get("trade") or {}).get("partner") != "WLD", position)
+        for position, row in enumerate(rows)
+    }
+    supported = [available for refs in by_country.values() if (available := refs & priority.keys())]
+    return {min(refs, key=priority.__getitem__) for refs in supported} if len(supported) >= 2 else set()
 
 
 def market_discovery_attempted(tools_invoked: list[str], tool_trace: list[dict] | None = None) -> bool:

@@ -6,6 +6,7 @@ import re
 from urllib.parse import urlparse
 
 from app.agents.tool_contracts import ToolResult
+from app.tools.extract import country_code, country_mentions
 from app.tools.page_fetch import fetch_page
 
 SELLER_PATTERNS = re.compile(
@@ -18,6 +19,17 @@ BUYER_PATTERNS = re.compile(
     r"\b(import(er|ing)?|distributor|wholesaler|procurement|sourcing|"
     r"buy(ing)?|purchasing|supplier portal|RFQ|"
     r"واردکننده|توزیع|عمده‌فروش|خرید)\b",
+    re.I,
+)
+SOURCING_ROLE = re.compile(
+    r"\bwe (?:directly )?(?:import|buy|purchase|source|procure)\b|"
+    r"\bour (?:procurement|purchasing|sourcing) (?:team|department)\b|"
+    r"وارد\s+می[‌\s]?کنیم|خریداری\s+می[‌\s]?کنیم",
+    re.I,
+)
+BUSINESS_LOCATION = re.compile(
+    r"\b(?:based|headquartered|registered|located|office(?:\s+is)?)\s+(?:in|at)\s+([^.!?؟;\n]{1,100})|"
+    r"(?:مستقر|ثبت[‌\s]شده|دفتر)\s+در\s+([^.!?؟;\n]{1,100})",
     re.I,
 )
 DIRECTORY_HOSTS = {
@@ -108,17 +120,25 @@ def verify_company(
     sellerish = bool(SELLER_PATTERNS.search(joined))
     buyerish = bool(BUYER_PATTERNS.search(joined))
     category = classify_category(joined)
+    official = page_text[:6000]
+    product_name = product.strip().casefold()
+    product_pattern = re.compile(rf"(?<!\w){re.escape(product_name)}(?!\w)") if product_name else None
+    sourcing = next((clause for clause in re.split(r"[.!?؟;\n]+", official)
+                     if SOURCING_ROLE.search(clause) and product_pattern and product_pattern.search(clause.casefold())), "")
+    destination = country_code(country)
+    location = next((match.group(1) or match.group(2) for match in BUSINESS_LOCATION.finditer(official)
+                     if destination in country_mentions(match.group(1) or match.group(2))), "")
 
-    if sellerish and not buyerish:
+    if (sellerish and not buyerish) or (SELLER_PATTERNS.search(official) and not sourcing):
         status = "rejected"
         category = "seller"
         reason = "علائم فروشنده/صادرکننده بدون نقش خریدار"
-    elif buyerish and website and page_text:
+    elif sourcing and location:
         status = "source_backed"
-        reason = "نقش خریدار/توزیع با صفحه شرکت هم‌خوان است"
-    elif buyerish:
+        reason = "صفحه شرکت نقش خرید یا تأمین این محصول و ارتباط با کشور مقصد را نشان می‌دهد."
+    elif buyerish or sourcing:
         status = "needs_review"
-        reason = "علائم خریدار در اسنیپت؛ صفحه رسمی ناکافی"
+        reason = "شاهد کافی برای نقش خرید این محصول در کشور مقصد در صفحه شرکت پیدا نشد."
     else:
         status = "needs_review"
         reason = "نقش کسب‌وکار مبهم"
@@ -128,6 +148,8 @@ def verify_company(
         fit.extend(snippets[:2])
     if page_text:
         fit.append(f"بررسی صفحه رسمی ({domain})")
+    if status == "source_backed":
+        fit[:0] = [sourcing.strip()[:240], location.strip()[:100]]
     fit.append(f"محصول هدف: {product}")
 
     return ToolResult(

@@ -7,6 +7,7 @@ from app.agents.buyer_runner import discover_and_verify_buyers
 from app.agents.tool_contracts import ToolResult
 from app.models.entities import Run
 from app.services import runs
+from app.tools.verify_company import verify_company
 
 
 def _seed_market(run_id: str, country: str) -> None:
@@ -95,3 +96,19 @@ def test_buyer_search_distinguishes_unavailable_provider_from_no_candidates():
     assert buyers == []
     assert status == "failed" and code == "PROVIDER_UNAVAILABLE"
     assert "WEB_SEARCH_BLOCKED" in message
+
+
+def test_snippet_and_sales_page_do_not_verify_a_local_buyer(monkeypatch):
+    sales_page = "We sell tea to wholesale buyers. Buy our tea online. Free shipping to the United States."
+
+    def fetch(_url):
+        return ToolResult(tool="fetch_page", ok=True, message_fa="", data={"text": sales_page})
+
+    monkeypatch.setattr("app.tools.verify_company.fetch_page", fetch)
+    evidence = dict(company_name="Tea company", website="https://example.com/tea", country="US", product="tea",
+                    snippets=["Importer and wholesaler in the United States"])
+    assert verify_company(**evidence).data["verification_status"] == "rejected"
+    sales_page = "We import tea from independent producers. Our office is in the United States."
+    assert verify_company(**evidence).data["verification_status"] == "source_backed"
+    sales_page = "We import tea from independent producers. Our office is in Germany."
+    assert verify_company(**evidence).data["verification_status"] == "needs_review"

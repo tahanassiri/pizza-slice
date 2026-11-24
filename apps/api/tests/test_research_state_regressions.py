@@ -105,6 +105,7 @@ def test_equivalent_wits_sources_and_trade_rows_count_once():
 
 def test_market_shortlist_triggers_model_synthesis_before_more_search(monkeypatch):
     url = "https://example.com/tea-trade"
+    us_url = "https://example.com/us-tea"
     contexts = []
     monkeypatch.setattr(admin_service, "read_safety", lambda _db: {})
 
@@ -115,13 +116,16 @@ def test_market_shortlist_triggers_model_synthesis_before_more_search(monkeypatc
         def decide_research_action(self, context):
             contexts.append(context)
             if len(contexts) == 1:
+                return {"action": "call_tool", "tool": "fetch_page", "args": {"url": us_url}}
+            if len(contexts) == 2:
                 return {"action": "call_tool", "tool": "fetch_page", "args": {"url": url}}
             assert context["decision_mode"] == "synthesis"
             assert context["synthesis_reason"] == "market_shortlist_ready"
             assert context["allowlisted_tools"] == []
+            assert {row["country"] for row in context["evidence"][:3]} == {"FR", "DE", "US"}
             return {"action": "conclude", "market_proposals": [
                 {"country_code": row["country"], "recommendation": "watch", "evidence_ids": [row["id"]]}
-                for row in context["evidence"]
+                for row in context["evidence"][:3]
             ]}
 
     class Executor:
@@ -130,12 +134,17 @@ def test_market_shortlist_triggers_model_synthesis_before_more_search(monkeypatc
 
         def execute(self, call):
             if call.tool == "fetch_page":
-                return ToolResult(tool=call.tool, ok=True, message_fa="", data={"url": url})
+                return ToolResult(tool=call.tool, ok=True, message_fa="", data={"url": call.args["url"]})
             if call.tool == "extract_claims":
                 claims = [{"statement": (
                     f"Reporter: {country}; TradeFlow: Import; ProductCode: 090240; "
                     "Product Description: Tea; Year: 2024; Partner: World; Trade Value 1000USD: 12.00"
                 )} for country in ("France", "Germany")]
+                if call.args["url"] == us_url:
+                    claims = [{"statement": (
+                        "Reporter: United States; TradeFlow: Import; ProductCode: 090240; "
+                        f"Product Description: Tea; Year: {year}; Partner: World; Trade Value 1000USD: 12.00"
+                    )} for year in range(2012, 2024)]
                 return ToolResult(tool=call.tool, ok=True, message_fa="", data={"claims": claims})
             assert call.tool == "save_evidence"
             return ToolResult(tool=call.tool, ok=True, message_fa="")
@@ -150,8 +159,8 @@ def test_market_shortlist_triggers_model_synthesis_before_more_search(monkeypatc
         result = asyncio.run(run_decision_loop(db, run, Executor(), emit, checkpoint={
             "completed_steps": ["classify", "memory"],
         }))
-    assert len(contexts) == 2
-    assert {market.country_code for market in result["markets"]} == {"FR", "DE"}
+    assert len(contexts) == 3
+    assert {market.country_code for market in result["markets"]} == {"FR", "DE", "US"}
     assert not result["provisional"]
 
 
