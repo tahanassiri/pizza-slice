@@ -510,6 +510,23 @@ def test_router_connection(db: Session, provider_id: str, model_id: str) -> Test
     )
 
 
+# Admin capability button only. The model reply is never copied into this sentence.
+CAPABILITY_PARSE_FAIL_FA = "پاسخ مدل تصمیم JSON قابل اجرا نبود. پژوهش فعال نشد و مدل دیگری جایگزین نشد."
+
+
+def _capability_parse_failure(db: Session, provider_id: str, model_id: str) -> TestConnectionOut:
+    """Record a failed capability check and return only the fixed Persian sentence."""
+
+    _write_meta(db, _capability_key(provider_id, model_id), "failed")
+    db.commit()
+    return TestConnectionOut(
+        ok=False,
+        checked=True,
+        connection_status="Failed",
+        message_fa=CAPABILITY_PARSE_FAIL_FA,
+    )
+
+
 def check_router_capability(db: Session, provider_id: str, model_id: str) -> TestConnectionOut:
     from app.agents.llm_decide import parse_model_decision, render_decision_prompt
     from app.providers.keyed import ModelCallError
@@ -536,16 +553,13 @@ def check_router_capability(db: Session, provider_id: str, model_id: str) -> Tes
         _write_meta(db, _capability_key(provider_id, model_id), "failed")
         db.commit()
         return TestConnectionOut(ok=False, checked=True, connection_status=exc.status, message_fa=exc.message_fa)
-    parsed = parse_model_decision(raw)
+    try:
+        # A list or other payload is not decision text. Do not stringify it into the response.
+        parsed = parse_model_decision(raw) if isinstance(raw, (str, dict)) else None
+    except Exception:
+        parsed = None
     if parsed is None:
-        _write_meta(db, _capability_key(provider_id, model_id), "failed")
-        db.commit()
-        return TestConnectionOut(
-            ok=False,
-            checked=True,
-            connection_status="Failed",
-            message_fa="پاسخ مدل تصمیم JSON قابل اجرا نبود. پژوهش فعال نشد و مدل دیگری جایگزین نشد.",
-        )
+        return _capability_parse_failure(db, provider_id, model_id)
     _write_meta(db, _capability_key(provider_id, model_id), "capable")
     db.commit()
     return TestConnectionOut(
