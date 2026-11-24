@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import ResearchTask
 
-LEASE_SECONDS = 120
+# Crash-recovery heartbeat. It must outlive one provider call (120s). It is not the research limit.
+LEASE_SECONDS = 360
 
 
 def _now() -> datetime:

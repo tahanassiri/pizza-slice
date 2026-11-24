@@ -18,19 +18,45 @@ class BudgetExceeded(Exception):
 
 
 # Per-run caps. The global row is a fleet ceiling, not a copy of these defaults.
+# Counts are recorded and do not stop research. The old 180s wall is not a research deadline.
 RUN_MODEL_CALLS = 12
 RUN_SEARCH_QUERIES = 20
 RUN_PAGES = 15
 RUN_RETRIES = 2
-RUN_WALL_SECONDS = 180
+LEGACY_WALL_SECONDS = 180
+
+
+def _safety_runtime_seconds(db: Session) -> int:
+    from app.agents.loop_safety import DEFAULT_SAFETY
+
+    runtime = int(DEFAULT_SAFETY["max_runtime_seconds"])
+    try:
+        from app.services.admin_service import read_safety
+
+        configured = read_safety(db).get("max_runtime_seconds")
+        if configured is not None:
+            runtime = int(configured)
+    except Exception:
+        return runtime
+    return max(0, runtime)
+
+
+def _retire_legacy_wall(db: Session, row: AgentBudget, runtime: int) -> AgentBudget:
+    if row.max_wall_seconds == LEGACY_WALL_SECONDS and runtime != LEGACY_WALL_SECONDS:
+        row.max_wall_seconds = runtime
+        row.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(row)
+    return row
 
 
 def ensure_run_budget(db: Session, run_id: str) -> AgentBudget:
+    runtime = _safety_runtime_seconds(db)
     row = db.scalar(
         select(AgentBudget).where(AgentBudget.scope == "run", AgentBudget.scope_id == run_id)
     )
     if row:
-        return row
+        return _retire_legacy_wall(db, row, runtime)
     global_row = ensure_global_budget(db)
     row = AgentBudget(
         scope="run",
@@ -39,7 +65,7 @@ def ensure_run_budget(db: Session, run_id: str) -> AgentBudget:
         max_search_queries=min(RUN_SEARCH_QUERIES, global_row.max_search_queries),
         max_pages=min(RUN_PAGES, global_row.max_pages),
         max_retries=min(RUN_RETRIES, global_row.max_retries),
-        max_wall_seconds=min(RUN_WALL_SECONDS, global_row.max_wall_seconds),
+        max_wall_seconds=runtime,
         updated_at=datetime.now(timezone.utc),
     )
     db.add(row)
@@ -49,16 +75,17 @@ def ensure_run_budget(db: Session, run_id: str) -> AgentBudget:
 
 
 def ensure_global_budget(db: Session) -> AgentBudget:
+    runtime = _safety_runtime_seconds(db)
     row = db.scalar(select(AgentBudget).where(AgentBudget.scope == "global").limit(1))
     if row:
-        return row
+        return _retire_legacy_wall(db, row, runtime)
     row = AgentBudget(
         scope="global",
         max_model_calls=400,
         max_search_queries=400,
         max_pages=300,
         max_retries=2,
-        max_wall_seconds=180,
+        max_wall_seconds=runtime,
         updated_at=datetime.now(timezone.utc),
     )
     db.add(row)

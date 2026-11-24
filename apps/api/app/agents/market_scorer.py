@@ -259,12 +259,18 @@ def score_from_evidence_markets(
                     *[f"شاهد {evidence_id}" for evidence_id in evidence_ids[:4]],
                     *statements[:3],
                     *[str(item) for item in (proposal.get("risks") or [])[:3]],
+                    *(
+                        ["عدم‌قطعیت: شاهد کیفی است و امتیاز عددی ساخته نشده."]
+                        if requested == "watch"
+                        else []
+                    ),
                 ],
             )
         )
     recommended = [card for card in cards if card.recommendation == "recommended"][:3]
     risky = [card for card in cards if card.recommendation == "risky"][:2]
-    return cards_to_markets(recommended + risky, sources=sources, source_name="cited-evidence")
+    watch = [card for card in cards if card.recommendation == "watch"][:5]
+    return cards_to_markets(recommended + risky + watch, sources=sources, source_name="cited-evidence")
 
 
 def cards_to_markets(
@@ -279,6 +285,7 @@ def cards_to_markets(
     sources = sources or []
     rec_rank = 0
     risk_rank = 100
+    watch_rank = 200
     for card in cards:
         if card.recommendation == "recommended":
             rec_rank += 1
@@ -286,6 +293,9 @@ def cards_to_markets(
         elif card.recommendation == "risky":
             risk_rank += 1
             rank = risk_rank
+        elif card.recommendation == "watch" and card.data_scope == "qualitative":
+            watch_rank += 1
+            rank = watch_rank
         else:
             continue
 
@@ -313,6 +323,8 @@ def cards_to_markets(
         risks = []
         if card.recommendation == "risky":
             risks.append("بازار پرریسک/هشدار — نباید با پیشنهاد اصلی اشتباه شود")
+        if card.recommendation == "watch":
+            risks.append("کیفی و نامطمئن — امتیاز عددی ساخته نشده است")
         if card.data_scope in {"sector", "total"}:
             risks.append("داده گروهی/کل است؛ تقاضای دقیق HS6 تأیید نشده")
 
@@ -354,6 +366,14 @@ def cards_to_markets(
                 value="partial" if card.data_scope != "hs6" else "verified",
             )
         )
+        if card.recommendation == "watch" or card.total is None:
+            metrics.append(
+                MarketMetric(
+                    key="uncertainty",
+                    label_fa="عدم‌قطعیت",
+                    value="کیفی — امتیاز عددی ساخته نشده",
+                )
+            )
 
         markets.append(
             Market(

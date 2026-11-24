@@ -247,7 +247,7 @@ class AgentBudget(Base):
     max_search_queries: Mapped[int] = mapped_column(Integer, default=20)
     max_pages: Mapped[int] = mapped_column(Integer, default=15)
     max_retries: Mapped[int] = mapped_column(Integer, default=2)
-    max_wall_seconds: Mapped[int] = mapped_column(Integer, default=180)
+    max_wall_seconds: Mapped[int] = mapped_column(Integer, default=1800)
     model_calls_used: Mapped[int] = mapped_column(Integer, default=0)
     search_queries_used: Mapped[int] = mapped_column(Integer, default=0)
     pages_used: Mapped[int] = mapped_column(Integer, default=0)

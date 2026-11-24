@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import time
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy.orm import Session
@@ -12,9 +14,37 @@ from app.agents.llm_decide import (
     AgentAction,
     blocked_action,
     build_decision_context,
+    explain_decision,
     llm_is_research_decision_maker,
     parse_model_decision,
     pending_steps,
+)
+from app.agents.loop_safety import (
+    action_signature,
+    active_elapsed,
+    effective_limits,
+    operational_stop,
+    runtime_stop_message,
+)
+from app.agents.observations import (
+    absorb_search_results,
+    compact_evidence,
+    context_sources,
+    load_observations,
+    mark_pages,
+    observation_sources,
+    page_progress_fa,
+    page_read_status,
+    processed_source,
+    research_counts,
+    search_progress_fa,
+)
+from app.agents.research_phase import (
+    ALREADY_PROCESSED_FEEDBACK,
+    FRUITLESS_SEARCH_FEEDBACK,
+    buyer_research_blocked,
+    premature_market_stop,
+    unread_sources_block_conclude,
 )
 from app.agents.market_scorer import score_from_evidence_markets
 from app.agents.tool_contracts import ToolCall
@@ -77,7 +107,23 @@ async def run_decision_loop(
     state: dict[str, Any] = dict(checkpoint.get("state") or {})
     state.setdefault("tool_trace", [])
     state.setdefault("claims", [])
+    state.setdefault("seen_claim_ids", [])
     state.setdefault("urls", [])
+    if "observations" not in (checkpoint.get("state") or {}):
+        loaded = load_observations(db, run.id)
+        if loaded:
+            state["observations"] = loaded
+        elif state.get("urls"):
+            absorb_search_results(
+                state,
+                [{"url": url} for url in state["urls"]],
+                run_id=run.id,
+                db=db,
+            )
+        else:
+            state["observations"] = []
+    else:
+        state.setdefault("observations", [])
     state.setdefault("conflicts", [])
     state.setdefault("unknowns", [])
     state.setdefault(
@@ -90,6 +136,8 @@ async def run_decision_loop(
     )
     tools_invoked: list[str] = list(checkpoint.get("tools_invoked") or [])
     iteration = int(checkpoint.get("decision_iteration") or 0)
+    fruitless = int(checkpoint.get("fruitless_searches") or 0)
+    unread_nudges = int(checkpoint.get("unread_nudges") or 0)
 
     def persist() -> bool:
         checkpoint["version"] = 2
@@ -100,12 +148,16 @@ async def run_decision_loop(
         checkpoint["state"] = {
             "tool_trace": state["tool_trace"][-30:],
             "claims": state["claims"][-20:],
-            "urls": state["urls"][:20],
+            "urls": list(dict.fromkeys(state["urls"]))[:24],
+            "observations": list(state.get("observations") or [])[-24:],
             "conflicts": state["conflicts"][:12],
             "unknowns": state["unknowns"][:12],
             "open_questions": state["open_questions"][:8],
+            "seen_claim_ids": list(state.get("seen_claim_ids") or [])[-40:],
         }
         checkpoint["tools_invoked"] = tools_invoked[-40:]
+        checkpoint["fruitless_searches"] = fruitless
+        checkpoint["unread_nudges"] = unread_nudges
         return _touch(db, task_id, lease_owner, checkpoint)
 
     def remember(step: str) -> bool:
@@ -289,34 +341,127 @@ async def run_decision_loop(
             tools_invoked,
         )
 
+    final_action: AgentAction | None = None
+    evidence_index = evidence_index_for_run(db, run.id)
+    from app.services.admin_service import read_safety
+
+    safety = read_safety(db)
+    limits = effective_limits(safety)
+    state["effective_limits"] = limits
+    checkpoint["effective_limits"] = limits
+    tokens_before = int(checkpoint.get("tokens_used") or 0)
+    carried_seconds = float(checkpoint.get("active_seconds") or 0)
+    session_started = time.monotonic()
+    invalid_streak = int(checkpoint.get("invalid_streak") or 0)
+    repeated = int(checkpoint.get("repeated_actions") or 0)
+    last_signature = str(checkpoint.get("last_signature") or "")
+
     await emit(
         db,
         run,
         phase="search",
         status="running",
         message_fa="حلقه تحقیق — تصمیم با مدل فعال",
-        payload={"event_type": "research.loop_start", "decision_source": "llm"},
+        payload={
+            "event_type": "research.loop_start",
+            "decision_source": "llm",
+            "effective_limits": limits,
+        },
         event_id=f"evt_{run.id}_loop_start",
     )
 
-    final_action: AgentAction | None = None
-    evidence_index = evidence_index_for_run(db, run.id)
+    def _elapsed() -> float:
+        return active_elapsed(carried_seconds, session_started, time.monotonic())
+
+    def _tokens() -> int:
+        return tokens_before + int(getattr(executor.llm, "tokens_used", 0) or 0)
+
+    def _cancelled() -> bool:
+        db.refresh(run)
+        return run.status == "cancelled"
+
+    def _remember_safety() -> None:
+        checkpoint["invalid_streak"] = invalid_streak
+        checkpoint["repeated_actions"] = repeated
+        checkpoint["last_signature"] = last_signature
+        checkpoint["active_seconds"] = _elapsed()
+        state["active_seconds"] = round(_elapsed(), 1)
+        checkpoint["tokens_used"] = _tokens()
+        state["tokens_used"] = _tokens()
+        state["estimated_cost_usd"] = float(getattr(executor.llm, "cost_usd", 0) or 0)
+        state["output_method"] = str(getattr(executor.llm, "output_method", "") or "")
+
+    def _stop_for(code: str) -> AgentAction:
+        elapsed = round(_elapsed(), 1)
+        token_cap = limits["max_run_tokens"]
+        messages = {
+            "cancelled": "اجرا لغو شد. شواهد جمع‌شده حفظ شد و کار قابل ادامه است.",
+            "consecutive_invalid": (
+                f"چند پاسخ پیاپی قابل اجرا نبود (سقف {limits['max_consecutive_invalid']}). "
+                "شواهد حفظ شد و مدل دیگری انتخاب نشد."
+            ),
+            "no_progress": (
+                f"همان اقدام بدون پیشرفت تکرار شد (سقف {limits['max_repeated_actions']}). شواهد حفظ شد."
+            ),
+            "runtime": runtime_stop_message(elapsed, limits["max_runtime_seconds"]),
+            "spending": (
+                f"توقف به دلیل سقف توکن: {_tokens()} از {token_cap}. شواهد و نقطه ادامه حفظ شد."
+            ),
+        }
+        state["last_stop"] = {
+            "code": code,
+            "active_seconds": elapsed,
+            "tokens_used": _tokens(),
+            "effective_limits": limits,
+        }
+        checkpoint["last_stop"] = state["last_stop"]
+        return blocked_action(
+            f"OPERATIONAL_{code.upper()}",
+            messages.get(code, "حد عملیاتی رسید. شواهد حفظ شد."),
+        )
+
     while True:
+        _remember_safety()
+        stop = operational_stop(
+            invalid_streak=invalid_streak,
+            repeated=0,
+            elapsed_seconds=_elapsed(),
+            tokens=_tokens(),
+            limits=safety,
+            cancelled=_cancelled(),
+        )
+        if stop:
+            final_action = _stop_for(stop)
+            break
         if not persist():
             return _lease_lost(state, run)
         left = _budget_left(executor)
+        evidence_rows = compact_evidence(evidence_index)
+        observations = list(state.get("observations") or [])
+        seen_ids = {str(item) for item in (state.get("seen_claim_ids") or [])}
+        new_ids = [
+            str(row.get("claim_id"))
+            for row in evidence_rows
+            if row.get("claim_id") and str(row.get("claim_id")) not in seen_ids
+        ]
+        state["seen_claim_ids"] = [str(row.get("claim_id")) for row in evidence_rows if row.get("claim_id")]
         context = build_decision_context(
             product=run.product,
             origin=run.origin_country,
             hs6=run.guessed_hs_code,
             iteration=iteration,
             max_iterations=iteration + 1,
-            evidence=list(evidence_index.values()),
-            sources=[{"url": url} for url in state["urls"][:12]],
+            evidence=evidence_rows,
+            sources=context_sources(observations),
             contradictions=list(state["conflicts"]),
             open_questions=list(state["open_questions"]),
             budget_left=left,
+            research_state=research_counts(observations, evidence_rows),
+            schema_detail="full" if iteration == 0 or checkpoint.get("phase_feedback") else "compact",
+            new_evidence_ids=new_ids,
         )
+        if checkpoint.get("phase_feedback"):
+            context["_correction"] = str(checkpoint["phase_feedback"])
         action: AgentAction | None = None
         pending = checkpoint.get("pending_decision") or {}
         if pending.get("iteration") == iteration and pending.get("raw"):
@@ -343,13 +488,50 @@ async def run_decision_loop(
                 break
             if getattr(executor.llm, "id", "") != "stub_llm":
                 _remember_model_status(db, "Verified")
-            action = parse_model_decision(raw)
+            action, note = explain_decision(raw)
+            if action is None:
+                invalid_streak += 1
+                _remember_safety()
+                if operational_stop(
+                    invalid_streak=invalid_streak,
+                    repeated=0,
+                    elapsed_seconds=_elapsed(),
+                    tokens=_tokens(),
+                    limits=safety,
+                    cancelled=False,
+                ) == "consecutive_invalid":
+                    final_action = _stop_for("consecutive_invalid")
+                    break
+                context["_correction"] = note
+                try:
+                    raw = guarded_model_call(
+                        db,
+                        run.id,
+                        "decide",
+                        lambda: _ask_model(executor.llm, context),
+                        provider_id=str(getattr(executor.llm, "id", "llm")),
+                    )
+                    executor.budget = ensure_run_budget(db, run.id)
+                except BudgetExceeded:
+                    iteration += 1
+                    continue
+                except ModelCallError as exc:
+                    _remember_model_status(db, exc.status)
+                    final_action = blocked_action(
+                        _MODEL_CODE.get(exc.status, "MODEL_FAILED"),
+                        exc.message_fa,
+                    )
+                    break
+                action = parse_model_decision(raw)
             if action:
+                invalid_streak = 0
                 checkpoint["pending_decision"] = {"iteration": iteration, "raw": raw}
+                _remember_safety()
                 if not persist():
                     return _lease_lost(state, run)
         if action is None:
             iteration += 1
+            _remember_safety()
             continue
 
         await emit(
@@ -368,7 +550,50 @@ async def run_decision_loop(
             event_id=f"evt_{run.id}_decision_{iteration}",
         )
         if action.action in {"conclude", "ask_user", "blocked"}:
+            feedback = premature_market_stop(action.action, tools_invoked, state["tool_trace"])
+            if feedback:
+                checkpoint["phase_feedback"] = feedback
+                signature = action_signature(action.action, action.tool, action.args or {})
+                if signature == last_signature:
+                    repeated += 1
+                else:
+                    repeated = 1
+                    last_signature = signature
+                _remember_safety()
+                repeated_cap = safety.get("max_repeated_actions")
+                repeated_cap = 3 if repeated_cap is None else int(repeated_cap)
+                if repeated_cap > 0 and repeated > repeated_cap:
+                    final_action = blocked_action(
+                        "MARKET_DISCOVERY_INCOMPLETE",
+                        feedback + " شواهد جمع‌شده حفظ شد.",
+                    )
+                    break
+                iteration += 1
+                continue
+            unread_feedback = unread_sources_block_conclude(
+                state.get("observations"),
+                len(evidence_rows),
+            )
+            if unread_feedback and unread_nudges < 1:
+                unread_nudges += 1
+                checkpoint["phase_feedback"] = unread_feedback
+                checkpoint["unread_nudges"] = unread_nudges
+                iteration += 1
+                continue
+            checkpoint["phase_feedback"] = ""
             final_action = action
+            break
+        signature = action_signature(action.action, action.tool, action.args or {})
+        if signature == last_signature:
+            repeated += 1
+        else:
+            repeated = 1
+            last_signature = signature
+        _remember_safety()
+        repeated_cap = safety.get("max_repeated_actions")
+        repeated_cap = 3 if repeated_cap is None else int(repeated_cap)
+        if repeated_cap > 0 and repeated > repeated_cap:
+            final_action = _stop_for("no_progress")
             break
         if action.action == "change_strategy":
             state["open_questions"].append("راهبرد تغییر کرد — منابع جایگزین لازم است")
@@ -386,6 +611,44 @@ async def run_decision_loop(
         if action.action != "call_tool" or not action.tool:
             final_action = blocked_action("LLM_INVALID", "اقدام مدل قابل اجرا نبود.")
             break
+        buyer_feedback = buyer_research_blocked(action.tool, run.selected_country)
+        if buyer_feedback:
+            checkpoint["phase_feedback"] = buyer_feedback
+            signature = action_signature(action.action, action.tool, action.args or {})
+            if signature == last_signature:
+                repeated += 1
+            else:
+                repeated = 1
+                last_signature = signature
+            _remember_safety()
+            repeated_cap = safety.get("max_repeated_actions")
+            repeated_cap = 3 if repeated_cap is None else int(repeated_cap)
+            if repeated_cap > 0 and repeated > repeated_cap:
+                final_action = blocked_action("BUYER_RESEARCH_BLOCKED", buyer_feedback)
+                break
+            iteration += 1
+            continue
+        if action.tool in {"fetch_page", "extract_claims"}:
+            prior = processed_source(state, str((action.args or {}).get("url") or ""))
+            if prior:
+                checkpoint["phase_feedback"] = ALREADY_PROCESSED_FEEDBACK
+                message_fa, event_type = page_progress_fa(0, status="already_processed")
+                await emit(
+                    db,
+                    run,
+                    phase="trade_stats",
+                    status="running",
+                    message_fa=message_fa,
+                    payload={
+                        "event_type": event_type,
+                        "url": prior.get("url"),
+                        "source_status": prior.get("status"),
+                        "claim_count": int(prior.get("claim_count") or 0),
+                    },
+                    event_id=f"evt_{run.id}_seen_{iteration}",
+                )
+                iteration += 1
+                continue
         try:
             result = executor.execute(ToolCall(tool=action.tool, args=action.args or {}))
         except BudgetExceeded:
@@ -400,25 +663,93 @@ async def run_decision_loop(
                 "error_code": result.error_code,
             }
         )
-        for item in (result.data or {}).get("results") or []:
-            if item.get("url"):
-                state["urls"].append(item["url"])
         if action.tool == "fetch_page" and result.ok:
-            await _absorb_page(db, run, executor, emit, state, result, action)
+            stored = await _absorb_page(db, run, executor, emit, state, result, action)
             evidence_index = evidence_index_for_run(db, run.id)
+            if stored:
+                fruitless = 0
+                if checkpoint.get("phase_feedback") in {FRUITLESS_SEARCH_FEEDBACK, ALREADY_PROCESSED_FEEDBACK}:
+                    checkpoint["phase_feedback"] = ""
+        elif action.tool == "extract_claims" and result.ok:
+            url = str((action.args or {}).get("url") or (result.data or {}).get("url") or "")
+            raw_claims = list((result.data or {}).get("claims") or [])
+            stored = _store_claims(db, run, state, url, raw_claims)
+            status = page_read_status(
+                stored=stored,
+                raw_claims=len(raw_claims),
+                extract_outcome=str((result.data or {}).get("outcome") or ""),
+            )
+            mark_pages(
+                state,
+                [url],
+                status=status,
+                claim_count=stored,
+                excerpt=str((action.args or {}).get("text") or ""),
+                db=db,
+            )
+            evidence_index = evidence_index_for_run(db, run.id)
+            message_fa, event_type = page_progress_fa(stored, status=status)
+            await emit(
+                db,
+                run,
+                phase="trade_stats",
+                status="running",
+                message_fa=message_fa,
+                payload={
+                    "event_type": event_type,
+                    "url": url,
+                    "claim_count": stored,
+                    "extract_outcome": status,
+                },
+                event_id=f"evt_{run.id}_extract_{iteration}",
+            )
+            if stored:
+                fruitless = 0
+                if checkpoint.get("phase_feedback") in {FRUITLESS_SEARCH_FEEDBACK, ALREADY_PROCESSED_FEEDBACK}:
+                    checkpoint["phase_feedback"] = ""
         elif action.tool == "search_web" and result.ok:
+            summary = absorb_search_results(
+                state,
+                list((result.data or {}).get("results") or []),
+                run_id=run.id,
+                db=db,
+            )
             await emit(
                 db,
                 run,
                 phase="search",
-                status="partial",
-                message_fa=result.message_fa,
+                status="running",
+                message_fa=search_progress_fa(
+                    summary["total"],
+                    summary["new_useful"],
+                    summary["thin"],
+                ),
                 payload={
-                    "event_type": "market.evidence_ready",
-                    "result_count": len((result.data or {}).get("results") or []),
+                    "event_type": "research.search_done",
+                    "result_count": summary["total"],
+                    "new_sources": summary["new_useful"],
+                    "thin_results": summary["thin"],
+                    "verified_claims": len(compact_evidence(evidence_index)),
                 },
+                source_refs=observation_sources(summary["added"])[:8],
                 event_id=f"evt_{run.id}_search_{iteration}",
             )
+            if summary["new_useful"]:
+                fruitless = 0
+                if checkpoint.get("phase_feedback") == FRUITLESS_SEARCH_FEEDBACK:
+                    checkpoint["phase_feedback"] = ""
+            else:
+                fruitless += 1
+                if fruitless >= 2:
+                    checkpoint["phase_feedback"] = FRUITLESS_SEARCH_FEEDBACK
+                fruitless_cap = safety.get("max_fruitless_searches")
+                fruitless_cap = 3 if fruitless_cap is None else int(fruitless_cap)
+                if fruitless_cap > 0 and fruitless >= fruitless_cap:
+                    final_action = blocked_action(
+                        "NO_NEW_SOURCES",
+                        FRUITLESS_SEARCH_FEEDBACK + " جست‌وجو بدون منبع تازه متوقف شد. شواهد موجود حفظ شد.",
+                    )
+                    break
         elif not result.ok:
             state["unknowns"].append(result.message_fa)
         iteration += 1
@@ -482,12 +813,49 @@ def _ask_model(llm: object, context: dict[str, Any]) -> str:
     return ""
 
 
-async def _absorb_page(db, run, executor, emit, state, result, action) -> None:
+def _store_claims(db, run, state, url: str, claims: list) -> int:
+    stored = 0
+    for claim in claims:
+        statement = str(claim.get("statement") or "").strip()
+        if not statement or not url:
+            continue
+        digits = re.sub(r"\D", "", statement)
+        hs_scope = str(claim.get("hs_scope") or "")
+        if not re.fullmatch(r"\d{6}", hs_scope) or hs_scope not in digits:
+            hs_scope = None
+        country = str(claim.get("country") or "")
+        country_scope = country if re.fullmatch(r"[A-Z]{2}", country) else None
+        period = str(claim.get("period") or "")
+        if not re.fullmatch(r"(19|20)\d{2}", period) or period not in statement:
+            period = None
+        try:
+            record_claim(
+                db,
+                run_id=run.id,
+                statement=statement[:2000],
+                source_url=url,
+                data_kind="estimate",
+                hs_scope=hs_scope,
+                country_scope=country_scope,
+                product_scope=run.product,
+                period=period,
+                confidence="unknown",
+            )
+        except ValueError:
+            continue
+        state["claims"].append(claim)
+        stored += 1
+    return stored
+
+
+async def _absorb_page(db, run, executor, emit, state, result, action) -> int:
     url = str((result.data or {}).get("url") or action.args.get("url") or "")
+    requested = str((action.args or {}).get("url") or "")
     text = str((result.data or {}).get("text") or "")
     if not url:
-        return
-    state["urls"].append(url)
+        return 0
+    if url not in state["urls"]:
+        state["urls"].append(url)
     cred = executor.execute(
         ToolCall(tool="assess_credibility", args={"url": url, "title": "", "publisher": ""})
     )
@@ -497,32 +865,43 @@ async def _absorb_page(db, run, executor, emit, state, result, action) -> None:
     extracted = executor.execute(
         ToolCall(
             tool="extract_claims",
-            args={"text": text, "url": url, "product": run.product},
+            args={
+                "text": text,
+                "url": url,
+                "product": run.product,
+                "tables": (result.data or {}).get("tables") or [],
+                "hs_code": run.guessed_hs_code,
+            },
         )
     )
-    for claim in (extracted.data or {}).get("claims") or []:
-        state["claims"].append(claim)
-        try:
-            record_claim(
-                db,
-                run_id=run.id,
-                statement=str(claim.get("statement") or "")[:2000],
-                source_url=url,
-                data_kind="estimate",
-                hs_scope=run.guessed_hs_code,
-                product_scope=run.product,
-                period=claim.get("period"),
-                confidence="unknown",
-            )
-        except ValueError:
-            continue
+    claims = list((extracted.data or {}).get("claims") or [])
+    stored = _store_claims(db, run, state, url, claims)
+    status = page_read_status(
+        stored=stored,
+        raw_claims=len(claims),
+        extract_outcome=str((extracted.data or {}).get("outcome") or ""),
+    )
+    mark_pages(
+        state,
+        [requested, url],
+        status=status,
+        claim_count=stored,
+        excerpt=text,
+        db=db,
+    )
+    message_fa, event_type = page_progress_fa(stored, status=status)
     await emit(
         db,
         run,
         phase="trade_stats",
-        status="partial",
-        message_fa=f"شواهد صفحه استخراج شد ({len((extracted.data or {}).get('claims') or [])} ادعا)",
-        payload={"event_type": "market.evidence_ready", "url": url},
+        status="running",
+        message_fa=message_fa,
+        payload={
+            "event_type": event_type,
+            "url": url,
+            "claim_count": stored,
+            "extract_outcome": status,
+        },
         source_refs=[
             Source(
                 url=url,
@@ -535,6 +914,7 @@ async def _absorb_page(db, run, executor, emit, state, result, action) -> None:
         ],
         event_id=f"evt_{run.id}_page_{abs(hash(url)) % 10**8}",
     )
+    return stored
 
 
 def _lease_lost(state: dict[str, Any], run: Run) -> dict[str, Any]:
@@ -569,6 +949,11 @@ async def _finish(db, run, executor, emit, state, final_action, markets, memory_
         for market in markets
         if any(item.key == "recommendation" and item.value == "risky" for item in market.metrics)
     ]
+    watch = [
+        market
+        for market in markets
+        if any(item.key == "recommendation" and item.value == "watch" for item in market.metrics)
+    ]
     run.markets_json = json.dumps([market.model_dump() for market in markets], ensure_ascii=False)
     db.commit()
     blocked = final_action.action == "blocked" or final_action.stop_reason in {
@@ -580,8 +965,15 @@ async def _finish(db, run, executor, emit, state, final_action, markets, memory_
     message = final_action.rationale_fa
     if markets and not blocked:
         message = (
-            f"پایان حلقه مدل: {len(recommended)} پیشنهاد، {len(risky)} پرریسک — {final_action.rationale_fa}"
+            f"پایان حلقه مدل: {len(recommended)} پیشنهاد، {len(risky)} پرریسک، "
+            f"{len(watch)} کیفی نامطمئن — {final_action.rationale_fa}"
         )
+    tokens = int(state.get("tokens_used") or 0)
+    if tokens:
+        message += f" — توکن: {tokens}"
+        cost = float(state.get("estimated_cost_usd") or 0)
+        if cost:
+            message += f" — هزینه برآوردی: ${cost:.4f}"
     await emit(
         db,
         run,
@@ -595,6 +987,11 @@ async def _finish(db, run, executor, emit, state, final_action, markets, memory_
             "decision_source": final_action.decision_source,
             "recommended": [market.country_code for market in recommended],
             "risky": [market.country_code for market in risky],
+            "watch": [market.country_code for market in watch],
+            "active_seconds": state.get("active_seconds"),
+            "effective_limits": state.get("effective_limits") or {},
+            "stop_detail": state.get("last_stop") or {},
+            "claim_count": len(state.get("claims") or []),
             "tool_trace": state.get("tool_trace") or [],
             "memory_status": memory_status,
             "conflicts": list(state.get("conflicts") or []) + list(final_action.conflicts or []),
@@ -602,25 +999,34 @@ async def _finish(db, run, executor, emit, state, final_action, markets, memory_
                 dict.fromkeys([*(state.get("unknowns") or []), *final_action.unknowns])
             ),
             "tools_invoked": tools_invoked,
+            "tokens_used": int(state.get("tokens_used") or 0),
+            "estimated_cost_usd": float(state.get("estimated_cost_usd") or 0),
+            "output_method": state.get("output_method") or "",
         },
         error_code=final_action.blocked_code or final_action.stop_reason if blocked or not markets else None,
         event_id=f"evt_{run.id}_market_compare",
     )
-    sources = [
-        Source(
-            url=url,
-            title=url,
-            publisher="web",
-            fetched_at="",
-            provider="free_web",
-            reliability_note="discovered during research",
-        )
-        for url in list(dict.fromkeys(state.get("urls") or []))[:12]
-    ]
+    sources = observation_sources(state.get("observations"))
+    if not sources:
+        sources = [
+            Source(
+                url=url,
+                title=url,
+                publisher="web",
+                fetched_at="",
+                provider="free_web",
+                reliability_note="obs:unread",
+            )
+            for url in list(dict.fromkeys(state.get("urls") or []))[:12]
+        ]
     return {
         "markets": markets,
         "recommended": recommended,
         "risky": risky,
+        "watch": watch,
+        "effective_limits": state.get("effective_limits") or {},
+        "active_seconds": state.get("active_seconds"),
+        "stop_detail": state.get("last_stop") or {},
         "sources": sources,
         "data_scope": "qualitative",
         "trade_meta": {
@@ -640,4 +1046,8 @@ async def _finish(db, run, executor, emit, state, final_action, markets, memory_
         "conflicts": list(state.get("conflicts") or []) + list(final_action.conflicts or []),
         "tools_invoked": tools_invoked,
         "decision_source": final_action.decision_source,
+        "observation_counts": research_counts(
+            state.get("observations"),
+            list(state.get("claims") or []),
+        ),
     }

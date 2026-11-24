@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from html import unescape
 from urllib.parse import quote, unquote, urlparse
 
 import httpx
@@ -56,19 +57,34 @@ def search_wikipedia(query: str, *, lang: str = "en", limit: int = 5) -> list[di
         response = client.get(url)
         response.raise_for_status()
         data = response.json()
+    return wikipedia_items(data, lang=lang)
+
+
+def wikipedia_items(data: object, *, lang: str) -> list[dict]:
+    """OpenSearch returns [query, titles, descriptions, urls]. Descriptions are snippets."""
+
     titles = data[1] if isinstance(data, list) and len(data) > 1 else []
+    descriptions = data[2] if isinstance(data, list) and len(data) > 2 else []
     links = data[3] if isinstance(data, list) and len(data) > 3 else []
-    return [
-        _item(
-            url=link,
-            title=str(title),
-            publisher=f"Wikipedia ({lang})",
-            provider="wikipedia_free",
-            reliability_note="دانشنامه عمومی — آمار تجارت قطعی نیست",
+    if not isinstance(descriptions, list):
+        descriptions = []
+    items: list[dict] = []
+    for index, link in enumerate(links):
+        if not str(link).startswith("http"):
+            continue
+        title = titles[index] if index < len(titles) else link
+        snippet = descriptions[index] if index < len(descriptions) else ""
+        items.append(
+            _item(
+                url=str(link),
+                title=str(title),
+                snippet=str(snippet or ""),
+                publisher=f"Wikipedia ({lang})",
+                provider="wikipedia_free",
+                reliability_note="دانشنامه عمومی — آمار تجارت قطعی نیست",
+            )
         )
-        for title, link in zip(titles, links)
-        if str(link).startswith("http")
-    ]
+    return items
 
 
 def search_duckduckgo_instant(query: str, *, max_results: int = 5) -> list[dict]:
@@ -123,6 +139,10 @@ def search_duckduckgo_html(query: str, *, max_results: int = 5) -> list[dict]:
         if response.status_code != 200:
             raise RuntimeError(f"ddg_http_{response.status_code}")
         html = response.text
+    return duckduckgo_html_items(html, max_results=max_results)
+
+
+def duckduckgo_html_items(html: str, *, max_results: int) -> list[dict]:
     items: list[dict] = []
     for match in re.finditer(
         r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
@@ -130,7 +150,7 @@ def search_duckduckgo_html(query: str, *, max_results: int = 5) -> list[dict]:
         re.I | re.S,
     ):
         href = unquote(match.group(1))
-        title = re.sub(r"<[^>]+>", "", match.group(2)).strip()
+        title = unescape(re.sub(r"<[^>]+>", "", match.group(2))).strip()
         if "uddg=" in href:
             wrapped = re.search(r"uddg=([^&]+)", href)
             if wrapped:
@@ -140,10 +160,21 @@ def search_duckduckgo_html(query: str, *, max_results: int = 5) -> list[dict]:
         host = urlparse(href).hostname or ""
         if host.endswith("duckduckgo.com"):
             continue
+        window = html[match.end() : match.end() + 2500]
+        snippet_match = re.search(
+            r'class="result__snippet"[^>]*>(.*?)</(?:a|td|div|span)>',
+            window,
+            re.I | re.S,
+        )
+        snippet = ""
+        if snippet_match:
+            snippet = unescape(re.sub(r"<[^>]+>", " ", snippet_match.group(1)))
+            snippet = re.sub(r"\s+", " ", snippet).strip()
         items.append(
             _item(
                 url=href,
                 title=title or href,
+                snippet=snippet,
                 publisher="DuckDuckGo HTML",
                 provider="duckduckgo_html",
                 reliability_note="نتیجه جست‌وجوی وب — نیازمند خواندن صفحه",

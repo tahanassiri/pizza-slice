@@ -263,7 +263,18 @@ export interface RouterProvider {
   has_key_configured: boolean;
   selected_model?: string | null;
   capability: string;
+  output_method?: string;
+  failure_category?: string;
+  tokens_used?: number;
+  estimated_cost_usd?: number;
   active: boolean;
+}
+
+export interface SafetySettings {
+  max_consecutive_invalid: number;
+  max_repeated_actions: number;
+  max_runtime_seconds: number;
+  max_run_tokens: number;
 }
 
 export interface AdminSettingsView {
@@ -273,6 +284,7 @@ export interface AdminSettingsView {
   llm_models?: LlmModelOption[];
   llm_groups?: LlmModelGroup[];
   routers?: RouterProvider[];
+  safety?: SafetySettings;
   trade_sources?: TradeSourceStatus[];
   connection_message_fa: string;
   error_history: { at: string; message_fa: string }[];

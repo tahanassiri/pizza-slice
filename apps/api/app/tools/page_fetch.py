@@ -160,11 +160,19 @@ def fetch_page(url: str) -> ToolResult:
                 error_code="PAYLOAD_TOO_LARGE",
             )
         raw = response.content[:MAX_BYTES]
-        text = raw.decode(response.encoding or "utf-8", errors="replace")
-        text = text.replace("<script", " <!--").replace("<style", " <!--")
+        html_text = raw.decode(response.encoding or "utf-8", errors="replace")
+        from app.tools.extract import extract_html_tables
+
+        tables = extract_html_tables(html_text)
+        text = html_text.replace("<script", " <!--").replace("<style", " <!--")
         text = re.sub(r"<[^>]+>", " ", text)
         text = _INJECTION.sub("[untrusted-text]", text)
         text = re.sub(r"\s+", " ", text).strip()[:12000]
+        for table in tables:
+            table["headers"] = [_INJECTION.sub("[untrusted-text]", cell) for cell in table["headers"]]
+            table["rows"] = [
+                [_INJECTION.sub("[untrusted-text]", cell) for cell in row] for row in table["rows"]
+            ]
         fetched_at = datetime.now(timezone.utc).isoformat()
         return ToolResult(
             tool="fetch_page",
@@ -173,6 +181,7 @@ def fetch_page(url: str) -> ToolResult:
             data={
                 "url": str(response.url),
                 "text": text,
+                "tables": tables,
                 "fetched_at": fetched_at,
                 "status_code": response.status_code,
                 "content_type": content_type or None,

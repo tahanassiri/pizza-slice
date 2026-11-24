@@ -46,6 +46,8 @@ const webServers = skipWebServer
           env: {
             ...process.env,
             PROVIDER_MODE: "stub",
+            ADMIN_USERNAME: "admin",
+            ADMIN_PASSWORD: "nova-dev-change-me",
           },
         },
         {

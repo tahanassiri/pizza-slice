@@ -150,6 +150,20 @@ def capability_router(
     return admin_service.check_router_capability(db, provider_id, body.model.strip())
 
 
+@router.get("/safety")
+def get_safety(db: Session = Depends(get_db), _auth: str = Depends(require_admin)):
+    return admin_service.read_safety(db)
+
+
+@router.put("/safety")
+def put_safety(
+    body: dict,
+    db: Session = Depends(get_db),
+    _auth: str = Depends(require_admin),
+):
+    return admin_service.update_safety(db, body)
+
+
 @router.get("/usage")
 def usage(db: Session = Depends(get_db), _auth: str = Depends(require_admin)):
     return admin_service.usage_summary(db)
