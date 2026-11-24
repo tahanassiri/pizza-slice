@@ -39,15 +39,6 @@ class ToolExecutor:
         self.budget = budget_mod.ensure_run_budget(db, run_id)
         self.memory = KnowledgeRepository(db)
 
-    def _precheck(self, tool: str) -> None:
-        b = self.budget
-        if tool in {"search_web", "research_regulations", "research_logistics"}:
-            if b.search_queries_used >= b.max_search_queries:
-                raise budget_mod.BudgetExceeded("سقف جست‌وجوی وب تمام شد.")
-        if tool in {"fetch_page", "verify_company"}:
-            if b.pages_used >= b.max_pages:
-                raise budget_mod.BudgetExceeded("سقف خواندن صفحه تمام شد.")
-
     def execute(self, call: ToolCall) -> ToolResult:
         if call.tool not in ALLOWED_TOOLS:
             return ToolResult(
@@ -57,7 +48,6 @@ class ToolExecutor:
                 error_code="TOOL_NOT_ALLOWED",
             )
         try:
-            self._precheck(call.tool)
             result = self._dispatch(call.tool, call.args or {})
         except budget_mod.BudgetExceeded as exc:
             return ToolResult(

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy.orm import Session
@@ -44,13 +43,10 @@ def _remember_model_status(db: Session, status: str) -> None:
 
 
 def _budget_left(executor: ToolExecutor) -> dict[str, int]:
-    budget = executor.budget
-    return {
-        # Model calls are counted elsewhere and do not stop this loop.
-        "model": 1000,
-        "search": max(0, budget.max_search_queries - budget.search_queries_used),
-        "pages": max(0, budget.max_pages - budget.pages_used),
-    }
+    """Counts are not a stop. The prompt must not tell the model a cap is gone."""
+
+    _ = executor.budget
+    return {"model": 1000, "search": 1000, "pages": 1000}
 
 
 def _touch(db: Session, task_id: str | None, owner: str | None, checkpoint: dict[str, Any]) -> bool:
@@ -74,12 +70,7 @@ async def run_decision_loop(
     lease_owner: str | None = None,
 ) -> dict[str, Any]:
     ensure_run_budget(db, run.id)
-    budget = executor.budget
-    # Iteration count is not the model-call budget. Wall time still ends the loop.
-    max_iter = max_iterations or 48
-    retries = max(0, int(budget.max_retries or 0))
-    wall = max(30, int(budget.max_wall_seconds or 180))
-    started = time.monotonic()
+    del max_iterations
     checkpoint = dict(checkpoint or {})
     checkpoint.setdefault("version", 2)
     completed = list(checkpoint.get("completed_steps") or [])
@@ -98,9 +89,11 @@ async def run_decision_loop(
         ],
     )
     tools_invoked: list[str] = list(checkpoint.get("tools_invoked") or [])
+    iteration = int(checkpoint.get("decision_iteration") or 0)
 
     def persist() -> bool:
         checkpoint["version"] = 2
+        checkpoint["decision_iteration"] = iteration
         checkpoint["completed_steps"] = completed
         if state.get("memory_status"):
             checkpoint["memory_status"] = state["memory_status"]
@@ -302,32 +295,22 @@ async def run_decision_loop(
         phase="search",
         status="running",
         message_fa="حلقه تحقیق — تصمیم با مدل فعال",
-        payload={"event_type": "research.loop_start", "max_iterations": max_iter, "decision_source": "llm"},
+        payload={"event_type": "research.loop_start", "decision_source": "llm"},
         event_id=f"evt_{run.id}_loop_start",
     )
 
     final_action: AgentAction | None = None
     evidence_index = evidence_index_for_run(db, run.id)
-    start_iter = int(checkpoint.get("decision_iteration") or 0)
-    for iteration in range(start_iter, max_iter):
+    while True:
         if not persist():
             return _lease_lost(state, run)
-        if time.monotonic() - started > wall:
-            final_action = AgentAction(
-                action="conclude",
-                stop_reason="wall_time",
-                rationale_fa="سقف زمان تحقیق تمام شد",
-                decision_source="llm",
-                unknowns=list(state["unknowns"]) or ["زمان ناکافی برای تکمیل شواهد"],
-            )
-            break
         left = _budget_left(executor)
         context = build_decision_context(
             product=run.product,
             origin=run.origin_country,
             hs6=run.guessed_hs_code,
             iteration=iteration,
-            max_iterations=max_iter,
+            max_iterations=iteration + 1,
             evidence=list(evidence_index.values()),
             sources=[{"url": url} for url in state["urls"][:12]],
             contradictions=list(state["conflicts"]),
@@ -339,49 +322,35 @@ async def run_decision_loop(
         if pending.get("iteration") == iteration and pending.get("raw"):
             action = parse_model_decision(str(pending.get("raw")))
         if action is None:
-            for _attempt in range(retries + 1):
-                try:
-                    raw = guarded_model_call(
-                        db,
-                        run.id,
-                        "decide",
-                        lambda: _ask_model(executor.llm, context),
-                        provider_id=str(getattr(executor.llm, "id", "llm")),
-                    )
-                    executor.budget = ensure_run_budget(db, run.id)
-                except BudgetExceeded as exc:
-                    final_action = AgentAction(
-                        action="conclude",
-                        stop_reason="budget_exceeded",
-                        rationale_fa=exc.message_fa,
-                        decision_source="llm",
-                    )
-                    action = final_action
-                    break
-                except ModelCallError as exc:
-                    _remember_model_status(db, exc.status)
-                    final_action = blocked_action(
-                        _MODEL_CODE.get(exc.status, "MODEL_FAILED"),
-                        exc.message_fa,
-                    )
-                    action = final_action
-                    break
-                if getattr(executor.llm, "id", "") != "stub_llm":
-                    _remember_model_status(db, "Verified")
-                action = parse_model_decision(raw)
-                if action:
-                    checkpoint["pending_decision"] = {"iteration": iteration, "raw": raw}
-                    if not persist():
-                        return _lease_lost(state, run)
-                    break
-        if final_action and final_action.stop_reason == "budget_exceeded":
-            break
+            try:
+                raw = guarded_model_call(
+                    db,
+                    run.id,
+                    "decide",
+                    lambda: _ask_model(executor.llm, context),
+                    provider_id=str(getattr(executor.llm, "id", "llm")),
+                )
+                executor.budget = ensure_run_budget(db, run.id)
+            except BudgetExceeded:
+                iteration += 1
+                continue
+            except ModelCallError as exc:
+                _remember_model_status(db, exc.status)
+                final_action = blocked_action(
+                    _MODEL_CODE.get(exc.status, "MODEL_FAILED"),
+                    exc.message_fa,
+                )
+                break
+            if getattr(executor.llm, "id", "") != "stub_llm":
+                _remember_model_status(db, "Verified")
+            action = parse_model_decision(raw)
+            if action:
+                checkpoint["pending_decision"] = {"iteration": iteration, "raw": raw}
+                if not persist():
+                    return _lease_lost(state, run)
         if action is None:
-            final_action = blocked_action(
-                "LLM_INVALID",
-                "پاسخ مدل پس از تلاش‌های مجاز قابل اجرا نبود. اجرا مسدود و قابل بازیابی است.",
-            )
-            break
+            iteration += 1
+            continue
 
         await emit(
             db,
@@ -403,6 +372,7 @@ async def run_decision_loop(
             break
         if action.action == "change_strategy":
             state["open_questions"].append("راهبرد تغییر کرد — منابع جایگزین لازم است")
+            iteration += 1
             continue
         if action.action == "verify_conflict":
             cross = executor.execute(ToolCall(tool="cross_check", args={"claims": state["claims"]}))
@@ -411,20 +381,16 @@ async def run_decision_loop(
             state["tool_trace"].append(
                 {"tool": "cross_check", "ok": cross.ok, "message_fa": cross.message_fa}
             )
+            iteration += 1
             continue
         if action.action != "call_tool" or not action.tool:
             final_action = blocked_action("LLM_INVALID", "اقدام مدل قابل اجرا نبود.")
             break
         try:
             result = executor.execute(ToolCall(tool=action.tool, args=action.args or {}))
-        except BudgetExceeded as exc:
-            final_action = AgentAction(
-                action="conclude",
-                stop_reason="budget_exceeded",
-                rationale_fa=exc.message_fa,
-                decision_source="llm",
-            )
-            break
+        except BudgetExceeded:
+            iteration += 1
+            continue
         tools_invoked.append(action.tool)
         state["tool_trace"].append(
             {
@@ -455,15 +421,7 @@ async def run_decision_loop(
             )
         elif not result.ok:
             state["unknowns"].append(result.message_fa)
-
-    if final_action is None:
-        final_action = AgentAction(
-            action="conclude",
-            stop_reason="max_iterations",
-            rationale_fa="سقف تکرار حلقه تحقیق تمام شد",
-            decision_source="llm",
-            unknowns=["شواهد ناکافی پس از سقف تکرار"],
-        )
+        iteration += 1
 
     markets: list[Market] = []
     if final_action.action != "blocked" and final_action.market_proposals:

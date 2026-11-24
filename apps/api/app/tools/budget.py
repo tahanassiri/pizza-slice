@@ -126,15 +126,11 @@ def consume(
 
     if units <= 0:
         return
-    targets: list[tuple[AgentBudget, bool]] = [(budget, False)]
+    targets: list[AgentBudget] = [budget]
     if budget.scope != "global":
-        targets.append((ensure_global_budget(db), True))
-    for target, fleet in targets:
-        # Model-call count is recorded only. It must not stop a run.
-        # Search and page caps still apply, including the fleet row.
-        if kind != "model" and _used(target, kind) + units > _cap(target, kind):
-            raise BudgetExceeded(_limit_message(kind, fleet=fleet))
-    for target, _fleet in targets:
+        targets.append(ensure_global_budget(db))
+    # Model, search, and page counts are recorded. They do not stop a run.
+    for target in targets:
         _add_used(target, kind, units)
     db.add(
         UsageAudit(
