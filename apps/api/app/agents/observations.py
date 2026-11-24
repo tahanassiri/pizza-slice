@@ -46,7 +46,22 @@ def search_progress_fa(total: int, new_useful: int, thin: int) -> str:
     )
 
 
-def page_progress_fa(claim_count: int) -> tuple[str, str]:
+def page_progress_fa(claim_count: int, *, status: str = "") -> tuple[str, str]:
+    if status == "irrelevant":
+        return (
+            "صفحه دریافت شد اما ردیف یا جمله مرتبط با محصول، کد HS، سال یا اصطلاح تجاری استخراج نشد.",
+            "research.page_irrelevant",
+        )
+    if status == "rejected":
+        return (
+            "متن مرتبط دیده شد اما اعتبارسنجی آن را به عنوان شاهد نپذیرفت. عددی ساخته نشد.",
+            "research.page_rejected",
+        )
+    if status == "already_processed":
+        return (
+            "این منبع قبلاً بررسی شده است. استخراج دوباره انجام نشد.",
+            "research.source_already_processed",
+        )
     if claim_count > 0:
         return (
             f"صفحه خوانده شد و {claim_count} ادعا ذخیره شد. این شاهد قابل استناد است.",
@@ -142,6 +157,28 @@ def absorb_search_results(
     }
 
 
+PROCESSED_STATUSES = frozenset({"extracted", "irrelevant", "rejected"})
+
+
+def processed_source(state: dict, url: str) -> dict | None:
+    key = normalize_url(url)
+    if not key:
+        return None
+    for row in state.get("observations") or []:
+        if row.get("url_key") == key or normalize_url(str(row.get("url") or "")) == key:
+            if str(row.get("status") or "") in PROCESSED_STATUSES:
+                return row
+    return None
+
+
+def page_read_status(*, stored: int, raw_claims: int, extract_outcome: str) -> str:
+    if stored > 0:
+        return "extracted"
+    if raw_claims > 0 or extract_outcome == "rejected":
+        return "rejected"
+    return "irrelevant"
+
+
 def mark_pages(
     state: dict,
     urls: list[str],
@@ -154,7 +191,7 @@ def mark_pages(
     keys = {normalize_url(url) for url in urls if normalize_url(url)}
     if not keys:
         return
-    rank = {"unread": 0, "fetched": 1, "extracted": 2}
+    rank = {"unread": 0, "fetched": 1, "irrelevant": 2, "rejected": 2, "extracted": 3}
     snippet = " ".join((excerpt or "").split())[:SNIPPET_CHARS]
     for row in state.get("observations") or []:
         if row.get("url_key") not in keys and row.get("url") not in keys:
@@ -192,7 +229,7 @@ def load_observations(db: Session, run_id: str) -> list[dict]:
         if not note.startswith("obs:"):
             continue
         status = note.split(":", 1)[1]
-        if status not in {"unread", "fetched", "extracted"}:
+        if status not in {"unread", "fetched", "extracted", "irrelevant", "rejected"}:
             status = "unread"
         url = normalize_url(source.url) or source.url
         claim_count = by_url.get(url, 0)
@@ -220,13 +257,15 @@ def context_sources(observations: list[dict] | None) -> list[dict]:
     picked = (unread[-MAX_CONTEXT_SOURCES:] + later[-4:])[:MAX_CONTEXT_SOURCES]
     compact = []
     for row in picked:
+        status = str(row.get("status") or "unread")
+        snippet_limit = SNIPPET_CHARS if status == "unread" else 80
         compact.append(
             {
                 "id": row.get("id"),
-                "status": row.get("status") or "unread",
+                "status": status,
                 "url": row.get("url"),
                 "title": str(row.get("title") or "")[:TITLE_CHARS],
-                "snippet": str(row.get("snippet") or "")[:SNIPPET_CHARS],
+                "snippet": str(row.get("snippet") or "")[:snippet_limit],
                 "useful": bool(row.get("useful")),
                 "claim_count": int(row.get("claim_count") or 0),
             }
@@ -239,12 +278,15 @@ def research_counts(observations: list[dict] | None, evidence_rows: list[dict]) 
         "unread": 0,
         "fetched": 0,
         "extracted": 0,
+        "irrelevant": 0,
+        "rejected": 0,
         "verified_claims": len(evidence_rows),
     }
     for row in observations or []:
         status = str(row.get("status") or "")
-        if status in {"unread", "fetched", "extracted"}:
+        if status in {"unread", "fetched", "extracted", "irrelevant", "rejected"}:
             counts[status] += 1
+    counts["processed"] = counts["extracted"] + counts["irrelevant"] + counts["rejected"]
     return counts
 
 

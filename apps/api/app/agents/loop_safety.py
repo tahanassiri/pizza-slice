@@ -43,6 +43,32 @@ def operational_stop(
     return None
 
 
+def effective_limits(limits: dict | None) -> dict[str, int]:
+    """Fill missing safety settings. Zero keeps a limit disabled."""
+
+    raw = limits or {}
+    resolved: dict[str, int] = {}
+    for key, default in DEFAULT_SAFETY.items():
+        value = raw.get(key)
+        resolved[key] = int(default if value is None else value)
+    return resolved
+
+
+def active_elapsed(carried_seconds: float, session_started: float, now: float) -> float:
+    """Prior sessions plus this process. Do not add a value this session already stored."""
+
+    carried = max(0.0, float(carried_seconds or 0))
+    return carried + max(0.0, float(now) - float(session_started))
+
+
+def runtime_stop_message(elapsed_seconds: float, max_runtime_seconds: int) -> str:
+    cap = "بدون سقف" if int(max_runtime_seconds) <= 0 else f"{int(max_runtime_seconds)} ثانیه"
+    return (
+        f"توقف به دلیل سقف زمان عملیاتی: {int(elapsed_seconds)} ثانیه فعال از {cap}. "
+        "شواهد و نقطه ادامه حفظ شد."
+    )
+
+
 def action_signature(action: str, tool: str | None, args: dict) -> str:
     import json
 

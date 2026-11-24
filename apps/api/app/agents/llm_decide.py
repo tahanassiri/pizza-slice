@@ -102,11 +102,15 @@ Do NOT score missing evidence with a number. Leave it unknown.
 Sector or total statistics are not product-specific demand.
 Market discovery does not need a selected destination and does not need prior memory.
 Call search_web before conclude or ask_user. Then choose which unread URL to fetch_page.
-CONTEXT.research_state counts unread sources, fetched pages, extracted sources, and verified claims.
-CONTEXT.sources are discovered pages with a stable id and status unread, fetched, or extracted.
+CONTEXT.research_state counts unread, fetched, extracted, irrelevant, rejected, and verified claims.
+CONTEXT.sources are discovered pages with a stable id. Status is unread, fetched, extracted, irrelevant, or rejected.
 A title or snippet is not verified evidence and must not be cited as a market source.
 CONTEXT.evidence contains extracted claims only. market_proposals.evidence_ids must be those ids.
+CONTEXT.new_evidence_ids lists claims stored since the previous decision. Cite those ids, do not fetch the same page again.
 fetch_page stores claims from that page into CONTEXT.evidence. extract_claims can store claims too.
+A page status of extracted, irrelevant, or rejected is finished. Do not fetch or extract it again. Choose an unread URL or change_strategy.
+Table claims copy headers, rows, units, years, HS codes, and country links from the page. Do not invent a number that is not in the claim.
+A qualitative proposal may use recommendation watch. Leave scores unknown. Do not invent a score.
 save_evidence writes memory only. It does not create CONTEXT.evidence ids.
 If a search adds no new useful source, do not reword it. Fetch one source or change strategy.
 Do not conclude from unread search results alone.
@@ -128,7 +132,18 @@ def build_decision_context(
     open_questions: list[str],
     budget_left: dict[str, int],
     research_state: dict[str, int] | None = None,
+    schema_detail: str = "full",
+    new_evidence_ids: list[str] | None = None,
 ) -> dict[str, Any]:
+    if schema_detail == "compact":
+        from app.agents.decision_schema import _REQUIRED_TOOL_ARGS
+
+        tool_schema = {
+            name: {"required": list(_REQUIRED_TOOL_ARGS.get(name, ()))}
+            for name in sorted(ALLOWED_TOOLS)
+        }
+    else:
+        tool_schema = {name: TOOL_ARG_SCHEMA.get(name, {}) for name in sorted(ALLOWED_TOOLS)}
     return {
         "product": product,
         "origin": origin,
@@ -139,11 +154,12 @@ def build_decision_context(
         "research_state": research_state
         or {"unread": 0, "fetched": 0, "extracted": 0, "verified_claims": len(evidence)},
         "evidence": evidence[:12],
+        "new_evidence_ids": list(new_evidence_ids or [])[:12],
         "sources": sources[:8],
         "contradictions": contradictions[:8],
         "budget_left": budget_left,
         "allowlisted_tools": sorted(ALLOWED_TOOLS),
-        "tool_schema": {name: TOOL_ARG_SCHEMA.get(name, {}) for name in sorted(ALLOWED_TOOLS)},
+        "tool_schema": tool_schema,
     }
 
 

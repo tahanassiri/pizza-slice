@@ -161,6 +161,8 @@ class ToolExecutor:
                 text=str(args.get("text") or ""),
                 url=str(args.get("url") or ""),
                 product=str(args.get("product") or ""),
+                tables=args.get("tables") if isinstance(args.get("tables"), list) else None,
+                hs_code=str(args.get("hs_code") or "") or None,
             )
         if tool == "assess_credibility":
             return assess_credibility(

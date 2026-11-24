@@ -27,6 +27,11 @@ UNREAD_SOURCE_FEEDBACK = (
     "نتیجه جست‌وجو شاهد تأییدشده نیست. یک نشانی را با fetch_page انتخاب کنید."
 )
 
+ALREADY_PROCESSED_FEEDBACK = (
+    "این منبع قبلاً بررسی شده است. استخراج دوباره انجام نشد. "
+    "یک منبع نخوانده را انتخاب کنید یا change_strategy را صدا بزنید."
+)
+
 
 def market_discovery_attempted(tools_invoked: list[str], tool_trace: list[dict] | None = None) -> bool:
     if any(tool in MARKET_TOOLS for tool in tools_invoked):
