@@ -4,7 +4,26 @@ import { useMemo, useState } from "react";
 import { fa } from "@/lib/i18n/fa";
 import { resolveSource } from "@/lib/api/client";
 import { getAdminToken } from "@/lib/api/live-adapter";
-import type { AdminSettingsView, LlmModelOption } from "@/types";
+import type { AdminSettingsView, LlmModelOption, RouterProvider } from "@/types";
+
+const DOCUMENTED_ROUTERS: RouterProvider[] = [
+  {
+    id: "openrouter",
+    label_fa: "اوپن‌روتر",
+    base_url: "https://openrouter.ai/api/v1",
+    has_key_configured: false,
+    capability: "unchecked",
+    active: false,
+  },
+  {
+    id: "omnirouter",
+    label_fa: "اومنی‌روتر",
+    base_url: "https://omnirouter-api.cc/v1",
+    has_key_configured: false,
+    capability: "unchecked",
+    active: false,
+  },
+];
 
 function liveApiBase(): string {
   if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE_URL !== undefined) {
@@ -17,6 +36,13 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
   const isMock = resolveSource() === "mock" || settings.is_mock_ui;
   const [message, setMessage] = useState(settings.connection_message_fa);
   const [modelCheckMessage, setModelCheckMessage] = useState("");
+  const [routerId, setRouterId] = useState(settings.routers?.find((item) => item.active)?.id ?? "openrouter");
+  const [routerModel, setRouterModel] = useState("");
+  const [routerKey, setRouterKey] = useState("");
+  const [routerModels, setRouterModels] = useState<string[]>([]);
+  const [routerMessage, setRouterMessage] = useState("");
+  const routers = settings.routers?.length ? settings.routers : DOCUMENTED_ROUTERS;
+  const activeRouter = routers.find((item) => item.id === routerId) ?? routers[0];
   const [keyDraft, setKeyDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [selectedModel, setSelectedModel] = useState(settings.selected_model);
@@ -130,13 +156,125 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
         body: JSON.stringify({ provider_id: `model:${selectedModel}` }),
       });
       if (!res.ok) throw new Error("fail");
-      const body = (await res.json()) as { message_fa?: string; connection_status?: string };
+      const body = (await res.json()) as {
+        message_fa?: string;
+        connection_status?: string;
+        billing_status?: string;
+      };
       setModelCheckMessage(
-        [body.connection_status, body.message_fa].filter(Boolean).join(" — ") ||
+        [
+          body.connection_status,
+          body.billing_status === "Billing problem" ? body.billing_status : "",
+          body.message_fa,
+        ]
+          .filter(Boolean)
+          .join(" — ") ||
           "نتیجه بررسی کلید مشخص نشد."
       );
     } catch {
       setModelCheckMessage(fa.error.generic);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveRouterKey() {
+    setRouterMessage("");
+    if (isMock) {
+      setRouterMessage("در حالت نمایشی کلید روتر ذخیره نمی‌شود و تماسی انجام نمی‌شود.");
+      setRouterKey("");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch(`${liveApiBase()}/api/admin/routers/${routerId}/key`, {
+        method: "PUT",
+        headers: await authHeaders(),
+        body: JSON.stringify({ api_key: routerKey.trim() || null }),
+      });
+      const body = (await res.json()) as { message_fa?: string; has_key_configured?: boolean };
+      if (!res.ok) throw new Error(body.message_fa || "fail");
+      setRouterKey("");
+      setRouterMessage(
+        body.has_key_configured
+          ? "کلید روتر ذخیره شد. عوض کردن مدل کلید جدید نمی‌خواهد."
+          : "کلید روتر پاک شد."
+      );
+    } catch (err) {
+      setRouterMessage(err instanceof Error && err.message !== "fail" ? err.message : fa.error.generic);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function activateRouterModel(modelId: string) {
+    const model = modelId.trim();
+    if (!model) return;
+    setRouterModel(model);
+    if (isMock) {
+      setRouterMessage("در حالت نمایشی مدل روتر فعال نمی‌شود.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch(`${liveApiBase()}/api/admin/routers/${routerId}/model`, {
+        method: "PUT",
+        headers: await authHeaders(),
+        body: JSON.stringify({ model }),
+      });
+      const body = (await res.json()) as { message_fa?: string; selected_model?: string };
+      if (!res.ok) throw new Error(body.message_fa || "fail");
+      setRouterMessage(`مدل فعال روتر: ${body.selected_model ?? model}. کلید جداگانه خواسته نشد.`);
+    } catch (err) {
+      setRouterMessage(err instanceof Error && err.message !== "fail" ? err.message : fa.error.generic);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadRouterModels() {
+    if (isMock) {
+      setRouterMessage("در حالت نمایشی فهرست زنده خوانده نمی‌شود.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch(`${liveApiBase()}/api/admin/routers/${routerId}/models`, {
+        headers: await authHeaders(),
+      });
+      const body = (await res.json()) as { ok?: boolean; models?: string[]; message_fa?: string };
+      if (!res.ok) throw new Error(body.message_fa || "fail");
+      setRouterModels(body.models ?? []);
+      setRouterMessage(body.message_fa || "فهرست مدل خوانده شد.");
+    } catch (err) {
+      setRouterMessage(err instanceof Error && err.message !== "fail" ? err.message : fa.error.generic);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function probeRouter(path: "test" | "capability") {
+    const model = routerModel.trim();
+    if (!model) {
+      setRouterMessage("شناسه مدل را وارد کنید.");
+      return;
+    }
+    if (isMock) {
+      setRouterMessage("در حالت نمایشی آزمون زنده انجام نمی‌شود.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch(`${liveApiBase()}/api/admin/routers/${routerId}/${path}`, {
+        method: "POST",
+        headers: await authHeaders(),
+        body: JSON.stringify({ model }),
+      });
+      const body = (await res.json()) as { message_fa?: string };
+      if (!res.ok) throw new Error(body.message_fa || "fail");
+      setRouterMessage(body.message_fa || "نتیجه آزمون مشخص نشد.");
+    } catch (err) {
+      setRouterMessage(err instanceof Error && err.message !== "fail" ? err.message : fa.error.generic);
     } finally {
       setBusy(false);
     }
@@ -284,6 +422,102 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
             {modelCheckMessage}
           </p>
         </div>
+      </section>
+
+      <section className="nova-panel min-w-0 space-y-3 overflow-hidden p-4 sm:p-5">
+        <h2 className="font-semibold text-white">روترهای سازگار با OpenAI</h2>
+        <p className="text-sm text-[var(--ink-muted)]">
+          کلید روی خود روتر می‌ماند. عوض کردن مدل کلید جدید نمی‌خواهد. پژوهش فقط بعد از آزمون تصمیم JSON فعال می‌شود و مدل دیگری جایگزین نمی‌شود.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {routers.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setRouterId(item.id);
+                setRouterModels([]);
+                setRouterMessage("");
+              }}
+              className={`rounded-xl border px-3 py-2 text-sm ${
+                item.id === activeRouter.id
+                  ? "border-[var(--accent)] bg-[var(--accent-soft)] text-white"
+                  : "border-[var(--line)] text-[var(--ink-soft)]"
+              }`}
+            >
+              {item.label_fa}
+              {item.active ? " · فعال" : ""}
+            </button>
+          ))}
+        </div>
+        <p className="break-all font-mono text-xs text-[var(--ink-muted)]" dir="ltr">
+          {activeRouter.base_url}
+        </p>
+        <p className="text-xs text-[var(--ink-muted)]">
+          کلید: {activeRouter.has_key_configured ? "ذخیره شده" : "نیست"} · توانایی پژوهش: {activeRouter.capability}
+        </p>
+        <label className="nova-label" htmlFor="router-key">
+          کلید روتر
+        </label>
+        <input
+          id="router-key"
+          className="nova-input"
+          type="password"
+          autoComplete="off"
+          dir="ltr"
+          value={routerKey}
+          onChange={(event) => setRouterKey(event.target.value)}
+        />
+        <label className="nova-label" htmlFor="router-model">
+          شناسه مدل
+        </label>
+        <input
+          id="router-model"
+          className="nova-input"
+          dir="ltr"
+          value={routerModel}
+          onChange={(event) => setRouterModel(event.target.value)}
+          placeholder="openai/gpt-4"
+        />
+        {routerModels.length ? (
+          <label className="nova-label" htmlFor="router-model-list">
+            فهرست زنده
+          </label>
+        ) : null}
+        {routerModels.length ? (
+          <select
+            id="router-model-list"
+            className="nova-input"
+            dir="ltr"
+            value={routerModel}
+            onChange={(event) => setRouterModel(event.target.value)}
+          >
+            {routerModels.map((modelId) => (
+              <option key={modelId} value={modelId}>
+                {modelId}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="nova-btn-primary !px-4 !py-2 text-xs" disabled={busy} onClick={() => void saveRouterKey()}>
+            ذخیره کلید روتر
+          </button>
+          <button type="button" className="nova-btn-ghost !px-4 !py-2 text-xs" disabled={busy} onClick={() => void loadRouterModels()}>
+            فهرست مدل‌ها
+          </button>
+          <button type="button" className="nova-btn-ghost !px-4 !py-2 text-xs" disabled={busy} onClick={() => void activateRouterModel(routerModel)}>
+            فعال‌سازی همین مدل
+          </button>
+          <button type="button" className="nova-btn-ghost !px-4 !py-2 text-xs" disabled={busy} onClick={() => void probeRouter("test")}>
+            آزمون اتصال
+          </button>
+          <button type="button" className="nova-btn-ghost !px-4 !py-2 text-xs" disabled={busy} onClick={() => void probeRouter("capability")}>
+            آزمون تصمیم JSON
+          </button>
+        </div>
+        <p role="status" className="break-words text-sm text-[var(--ink-muted)]">{routerMessage}</p>
       </section>
 
       <section className="nova-panel min-w-0 overflow-hidden p-4 sm:p-5">

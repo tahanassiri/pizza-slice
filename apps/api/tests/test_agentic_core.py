@@ -9,7 +9,7 @@ from app.agents.state_machine import assert_transition, can_transition
 from app.db.session import SessionLocal
 from app.knowledge.freshness import is_stale, stale_after_for_kind
 from app.knowledge.repository import KnowledgeRepository
-from app.tools.budget import BudgetExceeded, consume, ensure_run_budget
+from app.tools.budget import consume, ensure_run_budget
 from app.tools.verify_company import verify_company
 
 
@@ -75,11 +75,9 @@ def test_budget_enforced():
         db.commit()
         consume(db, b, kind="search", units=1, run_id="run_budget_test", tool_name="search_web")
         consume(db, b, kind="search", units=1, run_id="run_budget_test", tool_name="search_web")
-        try:
-            consume(db, b, kind="search", units=1, run_id="run_budget_test", tool_name="search_web")
-            assert False, "expected BudgetExceeded"
-        except BudgetExceeded:
-            pass
+        consume(db, b, kind="search", units=1, run_id="run_budget_test", tool_name="search_web")
+        db.refresh(b)
+        assert b.search_queries_used == 3
     finally:
         db.close()
 

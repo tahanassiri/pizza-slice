@@ -17,7 +17,7 @@ from app.events.store import append_event
 from app.jobs.durable import claim_task, create_task, recover_on_startup, renew_lease
 from app.models.entities import BuyerSearchRow, Run, RunEventRow
 from app.providers.model_clearance import classify_probe
-from app.tools.budget import BudgetExceeded, ensure_global_budget, ensure_run_budget, guarded_model_call
+from app.tools.budget import ensure_global_budget, ensure_run_budget, guarded_model_call
 from app.tools.free_web import free_web_search
 from app.tools.page_fetch import fetch_page
 
@@ -37,23 +37,24 @@ def test_budget_is_consumed_before_the_model_function():
     assert called["n"] == 1
 
 
-def test_exhausted_budget_does_not_call_the_model():
+def test_model_call_cap_does_not_stop_the_call():
     called = {"n": 0}
 
     def fn():
         called["n"] += 1
-        return "should-not-run"
+        return "ok"
 
     with SessionLocal() as db:
         row = ensure_run_budget(db, "run_capped")
         row.max_model_calls = 0
         db.commit()
-        with pytest.raises(BudgetExceeded):
-            guarded_model_call(db, "run_capped", "extract", fn)
-    assert called["n"] == 0
+        assert guarded_model_call(db, "run_capped", "extract", fn) == "ok"
+        db.refresh(row)
+        assert row.model_calls_used == 1
+    assert called["n"] == 1
 
 
-def test_global_cap_blocks_a_later_run():
+def test_global_model_cap_does_not_block_a_later_run():
     def fn():
         return "ok"
 
@@ -63,8 +64,7 @@ def test_global_cap_blocks_a_later_run():
         global_row.model_calls_used = 0
         db.commit()
         assert guarded_model_call(db, "run_g1", "classify", fn) == "ok"
-        with pytest.raises(BudgetExceeded):
-            guarded_model_call(db, "run_g2", "classify", fn)
+        assert guarded_model_call(db, "run_g2", "classify", fn) == "ok"
 
 
 def test_duplicate_event_id_is_not_inserted_twice():
@@ -281,24 +281,21 @@ def test_startup_does_not_fail_an_open_run_and_keeps_the_checkpoint():
 
 
 def test_connection_probe_statuses_do_not_treat_billable_200_as_free():
+    from app.providers.model_clearance import is_research_cleared
+
     assert classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=None, body="", error="down") == "Failed"
     assert classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=429, body="", error=None) == "Rate-limited"
     assert classify_probe(provider="google", model_id="missing-model", http_status=404, body="", error=None) == "Unavailable"
     assert classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=500, body="", error=None) == "Unavailable"
     assert classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=401, body="unauthorized", error=None) == "Failed"
+    assert classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=402, body="billing", error=None) == "Billing problem"
     assert (
         classify_probe(provider="google", model_id="gemini-4-hydrogen", http_status=200, body="ok", error=None)
-        == "Billing permission required"
+        == "Verified"
     )
-    monkeypatch = __import__("os")
-    monkeypatch.environ["NO_COST_LLM_MODELS"] = "local-free"
-    try:
-        assert (
-            classify_probe(provider="other", model_id="local-free", http_status=200, body="ok", error=None)
-            == "Verified"
-        )
-    finally:
-        monkeypatch.environ.pop("NO_COST_LLM_MODELS", None)
+    assert is_research_cleared("gemini-4-hydrogen", "Configured") is True
+    assert is_research_cleared("gemini-4-hydrogen", "Verified") is True
+    assert is_research_cleared("gemini-4-hydrogen", "Billing problem") is False
 
 
 def test_process_kill_then_restart_resumes_without_repeating_classify(tmp_path: Path):

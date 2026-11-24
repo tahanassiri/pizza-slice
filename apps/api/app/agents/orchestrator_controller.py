@@ -97,6 +97,10 @@ async def _emit(db: Session, run: Run, **kwargs) -> RunEventOut:
                 "LLM_UNAVAILABLE",
                 "LLM_INVALID",
                 "LEASE_LOST",
+                "MODEL_BILLING",
+                "MODEL_RATE_LIMITED",
+                "MODEL_UNAVAILABLE",
+                "MODEL_FAILED",
             }
             else 0
         )
@@ -189,13 +193,22 @@ async def run_agentic_pipeline(run_id: str) -> None:
 
         if not markets:
             stop = str(result.get("stop_reason") or "")
-            blocked = stop in {"LLM_UNAVAILABLE", "LLM_INVALID", "LEASE_LOST"}
+            notes = str((result.get("plan") or {}).get("notes_fa") or "")
+            blocked = stop in {
+                "LLM_UNAVAILABLE",
+                "LLM_INVALID",
+                "LEASE_LOST",
+                "MODEL_BILLING",
+                "MODEL_RATE_LIMITED",
+                "MODEL_UNAVAILABLE",
+                "MODEL_FAILED",
+            }
             await _emit(
                 db,
                 run,
                 phase="conclude",
                 status="partial",
-                message_fa=(
+                message_fa=notes or (
                     "پژوهش مسدود است و قابل بازیابی است"
                     if blocked
                     else "اطلاعات ناکافی برای پیشنهاد بازار"
@@ -203,9 +216,8 @@ async def run_agentic_pipeline(run_id: str) -> None:
                 error_code=stop if blocked else "INSUFFICIENT_EVIDENCE",
                 event_id=f"evt_{run.id}_conclude",
             )
-            summary = (
-                "پژوهش بازار مسدود است: مدل بدون‌هزینهٔ تأییدشده در دسترس نیست یا پاسخ آن قابل اجرا نبود. "
-                "این وضعیت قابل بازیابی است. تصمیم اکتشافی به‌جای مدل اجرا نشد و عدد/شرکت ساخته نشد."
+            summary = notes or (
+                "پژوهش بازار مسدود است و قابل بازیابی است. تصمیم اکتشافی اجرا نشد."
                 if blocked
                 else (
                     "در این اجرا شواهد کافی برای رتبه‌بندی بازار به‌دست نیامد "
@@ -235,7 +247,7 @@ async def run_agentic_pipeline(run_id: str) -> None:
             run.status = "partial"
             run.phase = "report"
             run.error_code = stop if blocked else "INSUFFICIENT_EVIDENCE"
-            run.error_message_fa = "پژوهش مسدود است" if blocked else "شواهد کافی نیست"
+            run.error_message_fa = (notes or "پژوهش مسدود است") if blocked else "شواهد کافی نیست"
             run.error_retryable = 1
             db.commit()
             await _emit(

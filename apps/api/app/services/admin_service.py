@@ -9,12 +9,20 @@ from app.core.config import get_settings
 from app.core.security import encrypt_secret
 from app.models.entities import AppMeta, ProviderSetting
 from app.providers.llm_catalog import all_models, catalog_grouped, models_by_id
-from app.providers.model_clearance import is_research_cleared
+from app.providers.openai_compat import (
+    ROUTER_PROVIDERS,
+    RouterURLError,
+    canonical_base,
+    is_router,
+    valid_model_id,
+)
+from app.providers.model_clearance import billing_status_for, is_research_cleared, normalize_connection_status
 from app.schemas.contracts import (
     AdminSettingsOut,
     LlmModelOptionOut,
     ProviderConfigOut,
     ProviderUpdateIn,
+    RouterProviderOut,
     TestConnectionOut,
     TradeSourceStatusOut,
 )
@@ -22,11 +30,17 @@ from app.schemas.contracts import (
 # Only the active LLM drives research decisions. No mandatory Tavily/Exa/WITS/Comtrade keys.
 DEFAULT_PROVIDERS = [
     ("gemini", "Gemini (legacy row)", "gemini-3.8-flash", None),
+    ("openrouter", "OpenRouter", None, None),
+    ("omnirouter", "OmniRouter", None, None),
 ]
 
 _PROVIDER_NOTES = {
     "gemini": "ردیف میراثی — انتخاب مدل و کلید نسخه از بخش مدل LLM انجام می‌شود.",
+    "openrouter": "کلید روی خود اوپن‌روتر است. عوض کردن مدل کلید جدید نمی‌خواهد.",
+    "omnirouter": "کلید روی خود اومنی‌روتر است. عوض کردن مدل کلید جدید نمی‌خواهد.",
 }
+
+SELECTED_PROVIDER_KEY = "selected_provider"
 
 LLM_KEY_PREFIX = "llm_model_key::"
 
@@ -76,10 +90,17 @@ def trade_sources_view(db: Session) -> list[TradeSourceStatusOut]:
     """Research tooling status for admin — no mandatory paid/trade APIs."""
     ensure_providers(db)
     now = datetime.now(timezone.utc).isoformat()
+    provider = get_selected_provider(db)
     model = get_selected_model(db)
-    has_key = model_has_key(db, model)
-    verification = read_model_verification(db, model)
-    cleared = is_research_cleared(model, verification)
+    if is_router(provider):
+        has_key = router_has_key(db, provider)
+        capability = read_router_capability(db, provider, model)
+        verification = capability
+        cleared = capability == "capable" and has_key
+    else:
+        has_key = model_has_key(db, model)
+        verification = read_model_verification(db, model)
+        cleared = is_research_cleared(model, verification)
     return [
         TradeSourceStatusOut(
             id="free_web",
@@ -95,22 +116,65 @@ def trade_sources_view(db: Session) -> list[TradeSourceStatusOut]:
             status="active" if cleared else "limited",
             optional=False,
             last_checked=now,
-            note_fa=(
-                "مدل تصمیم‌یار تحقیق — "
-                + (
-                    f"وضعیت اتصال: {verification}. پژوهش فقط پس از تأیید بدون‌هزینه ارسال می‌شود."
-                    if has_key
-                    else "بدون مدل بدون‌هزینهٔ تأییدشده، پژوهش مسدود است"
-                )
+            note_fa=_active_llm_note(
+                provider=provider,
+                model=model,
+                has_key=has_key,
+                verification=verification,
+                cleared=cleared,
             ),
         ),
     ]
+
+
+def _active_llm_note(*, provider: str, model: str, has_key: bool, verification: str, cleared: bool) -> str:
+    if is_router(provider):
+        if not has_key:
+            return "کلید این روتر ذخیره نشده است. پژوهش اجرا نمی‌شود و مدل دیگری جایگزین نشد."
+        if cleared:
+            return (
+                f"روتر «{provider}» و مدل «{model}» آزمون تصمیم JSON را گذرانده‌اند. "
+                "بودجه سرور اعمال می‌شود. تعویض خودکار مدل انجام نمی‌شود."
+            )
+        return (
+            f"کلید روتر ذخیره شده اما توانایی تصمیم تحقیق «{verification}» است. "
+            "اتصال موفق به‌تنهایی مجوز پژوهش نیست. مدل دیگری جایگزین نشد."
+        )
+    return (
+        "مدل تصمیم‌یار تحقیق — "
+        + (
+            f"اتصال: {verification}. صورتحساب: {billing_status_for(verification)}. "
+            "انتخاب ادمین مجوز فراخوانی همین مدل است و بودجه سرور اعمال می‌شود."
+            if has_key
+            else "بدون کلید همین نسخه، پژوهش اجرا نمی‌شود"
+        )
+    )
+
+
+def _stored_provider(db: Session) -> str | None:
+    row = db.get(AppMeta, SELECTED_PROVIDER_KEY)
+    if row and row.value.strip():
+        return row.value.strip()
+    return None
+
+
+def get_selected_provider(db: Session) -> str:
+    ensure_providers(db)
+    stored = _stored_provider(db)
+    if stored in ROUTER_PROVIDERS or stored in {"google", "openai", "deepseek"}:
+        return stored
+    selected = db.get(AppMeta, "selected_model")
+    mid = selected.value.strip() if selected and selected.value else _default_model()
+    meta = models_by_id().get(mid)
+    return meta.provider if meta else "google"
 
 
 def get_selected_model(db: Session) -> str:
     ensure_providers(db)
     selected = db.get(AppMeta, "selected_model")
     default = _default_model()
+    if _stored_provider(db) in ROUTER_PROVIDERS:
+        return selected.value.strip() if selected and selected.value else ""
     if selected and selected.value.strip():
         mid = selected.value.strip()
         # If DB still points at a removed/outdated id, remapped to current default
@@ -191,11 +255,14 @@ def settings_view(db: Session) -> AdminSettingsOut:
         for r in rows
     ]
     selected = get_selected_model(db)
+    provider = get_selected_provider(db)
     return AdminSettingsOut(
         providers=providers,
         selected_model=selected,
+        selected_provider=provider,
         llm_models=llm_models_view(db),
         llm_groups=catalog_grouped(),
+        routers=routers_view(db),
         trade_sources=trade_sources_view(db),
         connection_message_fa=(
             "کلید هر نسخه مدل جداگانه رمزنگاری می‌شود. "
@@ -206,7 +273,7 @@ def settings_view(db: Session) -> AdminSettingsOut:
         error_history=[
             {
                 "at": datetime.now(timezone.utc).isoformat(),
-                "message_fa": "بدون مدل بدون‌هزینهٔ تأییدشده پژوهش مسدود می‌ماند. راهبرد اکتشافی اجرا نمی‌شود.",
+                "message_fa": "پژوهش با مدل انتخاب‌شده ادمین اجرا می‌شود. اگر اتصال یا صورتحساب خطا بدهد، همان خطا نشان داده می‌شود. راهبرد اکتشافی اجرا نمی‌شود.",
             }
         ],
         is_mock_ui=False,
@@ -251,19 +318,256 @@ def update_provider(db: Session, provider_id: str, body: ProviderUpdateIn) -> Pr
     )
 
 
-def set_model(db: Session, model: str) -> str:
+def _write_meta(db: Session, key: str, value: str) -> None:
+    row = db.get(AppMeta, key)
+    if not row:
+        db.add(AppMeta(key=key, value=value))
+    else:
+        row.value = value
+
+
+def set_model(db: Session, model: str, provider: str | None = None) -> str:
     model = model.strip()
+    if is_router(provider):
+        return activate_router_model(db, provider or "", model)
     if model not in models_by_id():
         from app.core.errors import AppError
 
         raise AppError("INVALID_MODEL", "نسخه مدل در فهرست پشتیبانی‌شده نیست.")
-    row = db.get(AppMeta, "selected_model")
-    if not row:
-        db.add(AppMeta(key="selected_model", value=model))
-    else:
-        row.value = model
+    meta = models_by_id()[model]
+    _write_meta(db, "selected_model", model)
+    _write_meta(db, SELECTED_PROVIDER_KEY, meta.provider)
     db.commit()
     return model
+
+
+def _capability_key(provider_id: str, model_id: str) -> str:
+    return f"router_capability::{provider_id}::{model_id}"
+
+
+def _router_row(db: Session, provider_id: str) -> ProviderSetting:
+    from app.core.errors import AppError
+
+    if not is_router(provider_id):
+        raise AppError("INVALID_PROVIDER", "این ارائه‌دهنده روتر نیست.", 404)
+    ensure_providers(db)
+    row = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == provider_id))
+    if row is None:
+        raise AppError("PROVIDER_NOT_FOUND", "روتر یافت نشد.", 404)
+    return row
+
+
+def router_has_key(db: Session, provider_id: str) -> bool:
+    row = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == provider_id))
+    return bool(row and row.encrypted_api_key)
+
+
+def get_router_api_key(db: Session, provider_id: str) -> str | None:
+    row = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == provider_id))
+    if not row or not row.encrypted_api_key:
+        return None
+    from app.core.security import decrypt_secret
+
+    plain = decrypt_secret(row.encrypted_api_key)
+    return plain or None
+
+
+def read_router_capability(db: Session, provider_id: str, model_id: str) -> str:
+    row = db.get(AppMeta, _capability_key(provider_id, model_id))
+    if row and row.value in {"capable", "failed", "unchecked"}:
+        return row.value
+    return "unchecked"
+
+
+def routers_view(db: Session) -> list[RouterProviderOut]:
+    ensure_providers(db)
+    active_provider = get_selected_provider(db)
+    active_model = get_selected_model(db)
+    views: list[RouterProviderOut] = []
+    for provider_id, spec in ROUTER_PROVIDERS.items():
+        selected = active_model if active_provider == provider_id else None
+        views.append(
+            RouterProviderOut(
+                id=provider_id,
+                label_fa=spec["label_fa"],
+                base_url=canonical_base(provider_id),
+                has_key_configured=router_has_key(db, provider_id),
+                selected_model=selected,
+                capability=read_router_capability(db, provider_id, selected or ""),
+                active=active_provider == provider_id and bool(selected),
+            )
+        )
+    return views
+
+
+def set_router_key(db: Session, provider_id: str, api_key: str | None) -> dict:
+    row = _router_row(db, provider_id)
+    if api_key is None or api_key.strip() == "":
+        row.encrypted_api_key = None
+        row.enabled = 0
+        row.status = "untested"
+        db.commit()
+        return {"provider": provider_id, "has_key_configured": False}
+    row.encrypted_api_key = encrypt_secret(api_key.strip())
+    row.enabled = 1
+    row.status = "untested"
+    row.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"provider": provider_id, "has_key_configured": True}
+
+
+def activate_router_model(db: Session, provider_id: str, model_id: str) -> str:
+    from app.core.errors import AppError
+
+    _router_row(db, provider_id)
+    model_id = model_id.strip()
+    if not valid_model_id(model_id):
+        raise AppError("INVALID_MODEL", "شناسه مدل روتر نامعتبر است. مدل دیگری جایگزین نشد.")
+    _write_meta(db, "selected_model", model_id)
+    _write_meta(db, SELECTED_PROVIDER_KEY, provider_id)
+    row = _router_row(db, provider_id)
+    row.model = model_id
+    db.commit()
+    return model_id
+
+
+def _router_client(db: Session, provider_id: str, model_id: str):
+    from app.providers.openai_compat import OpenAICompatLLM
+
+    key = get_router_api_key(db, provider_id)
+    if not key:
+        from app.core.errors import AppError
+
+        raise AppError("NO_ROUTER_KEY", "کلید این روتر ذخیره نشده است. درخواستی فرستاده نشد.", 400)
+    try:
+        return OpenAICompatLLM(key, model_id, provider_id=provider_id)
+    except RouterURLError as exc:
+        from app.core.errors import AppError
+
+        raise AppError("ROUTER_URL", exc.message_fa, 400) from exc
+
+
+def list_router_models(db: Session, provider_id: str) -> dict:
+    from app.core.errors import AppError
+    from app.providers.keyed import ModelCallError
+
+    try:
+        client = _router_client(db, provider_id, provider_id)
+    except AppError as exc:
+        if exc.code == "NO_ROUTER_KEY":
+            return {"provider": provider_id, "models": [], "ok": False, "message_fa": exc.message_fa}
+        raise
+    try:
+        ids = client.list_model_ids()
+    except ModelCallError as exc:
+        return {
+            "provider": provider_id,
+            "models": [],
+            "ok": False,
+            "message_fa": exc.message_fa,
+        }
+    return {
+        "provider": provider_id,
+        "models": ids,
+        "ok": True,
+        "message_fa": f"{len(ids)} مدل از فهرست زنده روتر خوانده شد. این فهرست کاتالوگ ثابت نیست.",
+    }
+
+
+def test_router_connection(db: Session, provider_id: str, model_id: str) -> TestConnectionOut:
+    from app.providers.keyed import ModelCallError
+    from app.providers.model_clearance import billing_status_for
+
+    try:
+        client = _router_client(db, provider_id, model_id)
+    except Exception as exc:
+        from app.core.errors import AppError
+
+        if isinstance(exc, AppError):
+            return TestConnectionOut(ok=False, checked=False, connection_status="Failed", message_fa=exc.message_fa)
+        raise
+    try:
+        client.complete_json("ping")
+    except ModelCallError as exc:
+        _write_model_verification(db, f"{provider_id}:{model_id}", exc.status)
+        return TestConnectionOut(
+            ok=False,
+            checked=True,
+            connection_status=exc.status,
+            billing_status=billing_status_for(exc.status),
+            message_fa=exc.message_fa + " آزمون توانایی پژوهش انجام نشد.",
+        )
+    _write_model_verification(db, f"{provider_id}:{model_id}", "Verified")
+    return TestConnectionOut(
+        ok=True,
+        checked=True,
+        connection_status="Verified",
+        billing_status="none",
+        message_fa=(
+            f"Verified — اتصال «{model_id}» روی {canonical_base(provider_id)} برقرار شد. "
+            "این آزمون اتصال است و هنوز مجوز پژوهش نیست."
+        ),
+    )
+
+
+# Admin capability button only. The model reply is never copied into this sentence.
+CAPABILITY_PARSE_FAIL_FA = "پاسخ مدل تصمیم JSON قابل اجرا نبود. پژوهش فعال نشد و مدل دیگری جایگزین نشد."
+
+
+def _capability_parse_failure(db: Session, provider_id: str, model_id: str) -> TestConnectionOut:
+    """Record a failed capability check and return only the fixed Persian sentence."""
+
+    _write_meta(db, _capability_key(provider_id, model_id), "failed")
+    db.commit()
+    return TestConnectionOut(
+        ok=False,
+        checked=True,
+        connection_status="Failed",
+        message_fa=CAPABILITY_PARSE_FAIL_FA,
+    )
+
+
+def check_router_capability(db: Session, provider_id: str, model_id: str) -> TestConnectionOut:
+    from app.agents.llm_decide import parse_model_decision, render_decision_prompt
+    from app.providers.keyed import ModelCallError
+
+    try:
+        client = _router_client(db, provider_id, model_id)
+    except Exception as exc:
+        from app.core.errors import AppError
+
+        if isinstance(exc, AppError):
+            return TestConnectionOut(ok=False, checked=False, connection_status="Failed", message_fa=exc.message_fa)
+        raise
+    prompt = render_decision_prompt(
+        {
+            "product": "capability-check",
+            "origin": "capability-check",
+            "evidence": [],
+            "instruction": "Return one conclude action. Do not call tools.",
+        }
+    )
+    try:
+        raw = client.complete_json(prompt)
+    except ModelCallError as exc:
+        _write_meta(db, _capability_key(provider_id, model_id), "failed")
+        db.commit()
+        return TestConnectionOut(ok=False, checked=True, connection_status=exc.status, message_fa=exc.message_fa)
+    try:
+        # A list or other payload is not decision text. Do not stringify it into the response.
+        parsed = parse_model_decision(raw) if isinstance(raw, (str, dict)) else None
+    except Exception:
+        parsed = None
+    if parsed is None:
+        return _capability_parse_failure(db, provider_id, model_id)
+    _write_meta(db, _capability_key(provider_id, model_id), "capable")
+    db.commit()
+    return TestConnectionOut(
+        ok=True,
+        checked=True,
+        connection_status="Verified",
+        message_fa="مدل این تصمیم JSON را برگرداند و برای پژوهش همین شناسه مجاز است. تعویض خودکار انجام نشد.",
+    )
 
 
 def set_model_api_key(db: Session, model_id: str, api_key: str | None) -> dict:
@@ -303,11 +607,7 @@ def read_model_verification(db: Session, model_id: str) -> str:
         payload = json.loads(row.value)
     except json.JSONDecodeError:
         return "Failed"
-    status = str(payload.get("connection_status") or "Failed")
-    from app.providers.model_clearance import CONNECTION_STATUSES
-
-    if status not in CONNECTION_STATUSES:
-        return "Failed"
+    status = normalize_connection_status(str(payload.get("connection_status") or "Failed"))
     return status
 
 
@@ -331,20 +631,30 @@ def _write_model_verification(db: Session, model_id: str, status: str, *, detail
     db.commit()
 
 
-def _connection_message(model_id: str, status: str, *, http_status: int | None) -> str:
-    http = f"HTTP {http_status}" if http_status is not None else "بدون پاسخ HTTP"
-    labels = {
-        "Verified": f"Verified — مدل «{model_id}» به‌عنوان بدون‌هزینه تأیید شد ({http}).",
-        "Billing permission required": (
-            f"Billing permission required — نقطهٔ پایانی «{model_id}» پاسخ داد ({http}) "
-            "اما رایگان‌بودن درخواست اثبات نشد. پژوهش خودکار به این مدل سوئیچ نمی‌شود."
-        ),
-        "Rate-limited": f"Rate-limited — سهمیه یا نرخ «{model_id}» محدود است ({http}).",
-        "Unavailable": f"Unavailable — مدل «{model_id}» در نقطهٔ پایانی در دسترس نیست ({http}). شناسه کاتالوگ معتبر فرض نشد.",
-        "Failed": f"Failed — آزمون اتصال «{model_id}» ناموفق بود ({http}).",
-        "Configured": f"Configured — کلید «{model_id}» ذخیره شده و هنوز آزمون زنده نشده است.",
-    }
-    return labels.get(status, f"{status} — {http}")
+def _connection_message(
+    model_id: str,
+    status: str,
+    *,
+    http_status: int | None,
+    body: str = "",
+    error: str | None = None,
+) -> str:
+    if status == "Verified":
+        http = f"HTTP {http_status}" if http_status is not None else "بدون پاسخ HTTP"
+        return (
+            f"Verified — اتصال «{model_id}» برقرار شد ({http}). "
+            "هزینهٔ احتمالی داخل بودجه سرور مجاز است."
+        )
+    if status == "Configured":
+        return f"Configured — کلید «{model_id}» ذخیره شده و هنوز آزمون زنده نشده است."
+    from app.providers.model_clearance import describe_provider_failure
+
+    return describe_provider_failure(
+        model_id=model_id,
+        http_status=http_status,
+        body=body,
+        error=error,
+    )
 
 
 def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
@@ -352,7 +662,7 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
     # Model-version test: provider_id may be "model:<id>"
     if provider_id.startswith("model:"):
         from app.providers.keyed import probe_selected_endpoint
-        from app.providers.model_clearance import classify_probe, is_research_cleared
+        from app.providers.model_clearance import billing_status_for, classify_probe
 
         model_id = provider_id.removeprefix("model:")
         meta = models_by_id().get(model_id)
@@ -380,12 +690,18 @@ def test_connection(db: Session, provider_id: str) -> TestConnectionOut:
             error=probe.get("error"),
         )
         _write_model_verification(db, model_id, status, detail=str(probe.get("error") or probe.get("http_status") or ""))
-        cleared = is_research_cleared(model_id, status)
         return TestConnectionOut(
-            ok=cleared,
+            ok=status == "Verified",
             checked=True,
             connection_status=status,
-            message_fa=_connection_message(model_id, status, http_status=probe.get("http_status")),
+            billing_status=billing_status_for(status),
+            message_fa=_connection_message(
+                model_id,
+                status,
+                http_status=probe.get("http_status"),
+                body=str(probe.get("body") or ""),
+                error=probe.get("error"),
+            ),
         )
 
     row = db.scalar(select(ProviderSetting).where(ProviderSetting.provider_id == provider_id))

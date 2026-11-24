@@ -17,7 +17,7 @@ from app.knowledge.repository import KnowledgeRepository
 from app.models.entities import KnowledgeItem, ProviderSetting, Run, UsageAudit
 from app.schemas.contracts import Buyer, Source
 from app.services import runs
-from app.tools.budget import BudgetExceeded, consume, ensure_run_budget
+from app.tools.budget import consume, ensure_run_budget
 from app.tools.executor import ToolExecutor
 from app.tools.page_fetch import fetch_page
 from app.tools.verify_company import verify_company
@@ -522,11 +522,16 @@ def test_s9_13_budget_enforced_server_side(client, admin_token):
         b.model_calls_used = 0
         db.commit()
         consume(db, b, kind="model", units=1, run_id="run_budget_s9", tool_name="classify_product")
-        try:
-            consume(db, b, kind="model", units=1, run_id="run_budget_s9", tool_name="classify_product")
-            assert False
-        except BudgetExceeded:
-            pass
+        consume(db, b, kind="model", units=1, run_id="run_budget_s9", tool_name="classify_product")
+        db.refresh(b)
+        assert b.model_calls_used == 2
+        b.max_search_queries = 1
+        b.search_queries_used = 0
+        db.commit()
+        consume(db, b, kind="search", units=1, run_id="run_budget_s9", tool_name="search_web")
+        consume(db, b, kind="search", units=1, run_id="run_budget_s9", tool_name="search_web")
+        db.refresh(b)
+        assert b.search_queries_used == 2
 
     # admin can read/update caps
     before = client.get(

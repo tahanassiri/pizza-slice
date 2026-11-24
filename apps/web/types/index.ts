@@ -256,11 +256,23 @@ export interface TradeSourceStatus {
   note_fa?: string;
 }
 
+export interface RouterProvider {
+  id: string;
+  label_fa: string;
+  base_url: string;
+  has_key_configured: boolean;
+  selected_model?: string | null;
+  capability: string;
+  active: boolean;
+}
+
 export interface AdminSettingsView {
   providers: ProviderConfig[];
   selected_model: string;
+  selected_provider?: string;
   llm_models?: LlmModelOption[];
   llm_groups?: LlmModelGroup[];
+  routers?: RouterProvider[];
   trade_sources?: TradeSourceStatus[];
   connection_message_fa: string;
   error_history: { at: string; message_fa: string }[];

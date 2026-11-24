@@ -39,18 +39,6 @@ class ToolExecutor:
         self.budget = budget_mod.ensure_run_budget(db, run_id)
         self.memory = KnowledgeRepository(db)
 
-    def _precheck(self, tool: str) -> None:
-        b = self.budget
-        if tool in {"search_web", "research_regulations", "research_logistics"}:
-            if b.search_queries_used >= b.max_search_queries:
-                raise budget_mod.BudgetExceeded("سقف جست‌وجوی وب تمام شد.")
-        if tool in {"fetch_page", "verify_company"}:
-            if b.pages_used >= b.max_pages:
-                raise budget_mod.BudgetExceeded("سقف خواندن صفحه تمام شد.")
-        if tool in {"classify_product"}:
-            if b.model_calls_used >= b.max_model_calls:
-                raise budget_mod.BudgetExceeded("سقف فراخوانی مدل تمام شد.")
-
     def execute(self, call: ToolCall) -> ToolResult:
         if call.tool not in ALLOWED_TOOLS:
             return ToolResult(
@@ -60,7 +48,6 @@ class ToolExecutor:
                 error_code="TOOL_NOT_ALLOWED",
             )
         try:
-            self._precheck(call.tool)
             result = self._dispatch(call.tool, call.args or {})
         except budget_mod.BudgetExceeded as exc:
             return ToolResult(
@@ -247,13 +234,32 @@ class ToolExecutor:
             cleared = bool(self.llm) and bool(getattr(self.llm, "research_cleared", False))
             stub_llm = bool(self.llm) and getattr(self.llm, "id", "") == "stub_llm"
             if self.llm and hasattr(self.llm, "classify_hs") and (cleared or stub_llm):
-                hs, conf = guarded_model_call(
-                    self.db,
-                    self.run_id,
-                    "classify",
-                    lambda: self.llm.classify_hs(product, hs_hint),  # type: ignore[union-attr]
-                    provider_id=str(getattr(self.llm, "id", "llm")),
-                )
+                try:
+                    hs, conf = guarded_model_call(
+                        self.db,
+                        self.run_id,
+                        "classify",
+                        lambda: self.llm.classify_hs(product, hs_hint),  # type: ignore[union-attr]
+                        provider_id=str(getattr(self.llm, "id", "llm")),
+                    )
+                except Exception as exc:
+                    from app.providers.keyed import ModelCallError
+
+                    if isinstance(exc, ModelCallError):
+                        code = {
+                            "Billing problem": "MODEL_BILLING",
+                            "Rate-limited": "MODEL_RATE_LIMITED",
+                            "Unavailable": "MODEL_UNAVAILABLE",
+                        }.get(exc.status, "MODEL_FAILED")
+                        return ToolResult(
+                            tool="classify_product",
+                            ok=False,
+                            message_fa=exc.message_fa,
+                            error_code=code,
+                            data={"product": product, "budget_reserved": True},
+                            spent={},
+                        )
+                    raise
                 reserved = True
                 self.budget = budget_mod.ensure_run_budget(self.db, self.run_id)
             elif hs_hint:

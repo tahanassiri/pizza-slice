@@ -19,6 +19,7 @@ from app.schemas.contracts import (
     AdminSettingsOut,
     ModelKeyIn,
     ModelSelectIn,
+    RouterKeyIn,
     ProviderConfigOut,
     ProviderUpdateIn,
     TestConnectionIn,
@@ -78,7 +79,10 @@ def put_model(
     model = body.model.strip()
     if not model:
         raise AppError("INVALID_MODEL", "مدل نامعتبر است.")
-    return {"selected_model": admin_service.set_model(db, model)}
+    return {
+        "selected_model": admin_service.set_model(db, model, body.provider),
+        "selected_provider": admin_service.get_selected_provider(db),
+    }
 
 
 @router.put("/model/key")
@@ -91,6 +95,59 @@ def put_model_key(
     if not model:
         raise AppError("INVALID_MODEL", "مدل نامعتبر است.")
     return admin_service.set_model_api_key(db, model, body.api_key)
+
+
+@router.put("/routers/{provider_id}/key")
+def put_router_key(
+    provider_id: str,
+    body: RouterKeyIn,
+    db: Session = Depends(get_db),
+    _auth: str = Depends(require_admin),
+):
+    return admin_service.set_router_key(db, provider_id, body.api_key)
+
+
+@router.put("/routers/{provider_id}/model")
+def put_router_model(
+    provider_id: str,
+    body: ModelSelectIn,
+    db: Session = Depends(get_db),
+    _auth: str = Depends(require_admin),
+):
+    model = body.model.strip()
+    if not model:
+        raise AppError("INVALID_MODEL", "مدل نامعتبر است.")
+    selected = admin_service.activate_router_model(db, provider_id, model)
+    return {"selected_model": selected, "selected_provider": provider_id, "has_key_configured": admin_service.router_has_key(db, provider_id)}
+
+
+@router.get("/routers/{provider_id}/models")
+def get_router_models(
+    provider_id: str,
+    db: Session = Depends(get_db),
+    _auth: str = Depends(require_admin),
+):
+    return admin_service.list_router_models(db, provider_id)
+
+
+@router.post("/routers/{provider_id}/test", response_model=TestConnectionOut)
+def test_router(
+    provider_id: str,
+    body: ModelSelectIn,
+    db: Session = Depends(get_db),
+    _auth: str = Depends(require_admin),
+):
+    return admin_service.test_router_connection(db, provider_id, body.model.strip())
+
+
+@router.post("/routers/{provider_id}/capability", response_model=TestConnectionOut)
+def capability_router(
+    provider_id: str,
+    body: ModelSelectIn,
+    db: Session = Depends(get_db),
+    _auth: str = Depends(require_admin),
+):
+    return admin_service.check_router_capability(db, provider_id, body.model.strip())
 
 
 @router.get("/usage")

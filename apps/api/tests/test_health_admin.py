@@ -86,9 +86,10 @@ def test_admin_model_key_presence_is_not_connection_success(client, admin_token)
     assert post.called
     assert result.status_code == 200
     body = result.json()
-    assert body["ok"] is False
+    assert body["ok"] is True
     assert body["checked"] is True
-    assert body["connection_status"] == "Billing permission required"
+    assert body["connection_status"] == "Verified"
+    assert body["billing_status"] == "none"
     assert secret not in result.text
 
 

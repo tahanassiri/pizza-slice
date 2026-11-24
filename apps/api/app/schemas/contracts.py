@@ -281,11 +281,23 @@ class TradeSourceStatusOut(BaseModel):
     note_fa: str | None = None
 
 
+class RouterProviderOut(BaseModel):
+    id: str
+    label_fa: str
+    base_url: str
+    has_key_configured: bool = False
+    selected_model: str | None = None
+    capability: str = "unchecked"
+    active: bool = False
+
+
 class AdminSettingsOut(BaseModel):
     providers: list[ProviderConfigOut]
     selected_model: str
+    selected_provider: str = "google"
     llm_models: list[LlmModelOptionOut] = []
     llm_groups: list[dict] = []
+    routers: list[RouterProviderOut] = []
     trade_sources: list[TradeSourceStatusOut] = []
     connection_message_fa: str
     error_history: list[dict[str, str]]
@@ -294,6 +306,11 @@ class AdminSettingsOut(BaseModel):
 
 class ModelSelectIn(BaseModel):
     model: str
+    provider: str | None = None
+
+
+class RouterKeyIn(BaseModel):
+    api_key: str | None = None
 
 
 class ModelKeyIn(BaseModel):
@@ -310,6 +327,7 @@ class TestConnectionOut(BaseModel):
     message_fa: str
     checked: bool = False
     connection_status: str = "Failed"
+    billing_status: str = "none"
 
 
 class HealthOut(BaseModel):

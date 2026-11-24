@@ -38,4 +38,27 @@ test.describe("NOVA Persian home smoke", () => {
     });
     await expect(page.getByText("مسیر تحقیق").first()).toBeVisible();
   });
+
+  test("saffron analysis reaches markets and report without a no-cost block", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#product").fill("زعفران");
+    await page.locator("#origin").fill("ایران");
+    await page.getByRole("button", { name: "شروع تحلیل صادرات" }).click();
+    await expect(page).toHaveURL(/\/analysis\/[^/?#]+/, { timeout: 60_000 });
+    await expect(page.getByText("زعفران").first()).toBeVisible();
+    await expect(page.getByText("نتیجه ناقص").first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("بدون‌هزینه")).toHaveCount(0);
+
+    const runUrl = page.url().replace(/\/$/, "");
+    await page.goto(`${runUrl}/markets`);
+    await expect(page.getByText("بازاری برای نمایش نیست.").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.goto(`${runUrl}/report`);
+    await expect(page.getByText("زعفران").first()).toBeVisible();
+    await expect(page.getByText("بدون‌هزینه")).toHaveCount(0);
+    await expect(page.getByText("تصمیم اکتشافی اجرا نشد").first()).toBeVisible({
+      timeout: 15_000,
+    });
+  });
 });
