@@ -18,6 +18,7 @@ class StructuredResult:
     finish_reason: str = ""
     usage: dict[str, int] = field(default_factory=dict)
     truncated: bool = False
+    raw_text: str = ""
     provider_name: str = ""
     http_status: int | None = None
     message_fa: str = ""
@@ -48,7 +49,7 @@ def output_budget(purpose: str, model_limit: int | None = None) -> tuple[int, in
         "capability-basic": (512, 2048),
         "capability-decision": (2048, 8192),
         "decide": (4096, 8192),
-        "classify": (128, 512),
+        "classify": (512, 2048),
     }
     initial, ceiling = table.get(purpose, (2048, 8192))
     if model_limit and model_limit > 0:

@@ -21,6 +21,40 @@ from app.tools.page_fetch import fetch_page
 from app.tools.verify_company import verify_company
 
 
+def _hs_from_evidence(llm: object, product: str, hypothesis: str | None) -> tuple[str | None, str]:
+    """Confirm the model's HS6 against one web search. Do not invent a code the model did not return."""
+
+    from app.agents.hs_code import accept_hs_evidence
+
+    source_text = ""
+    search_ok = False
+    try:
+        found = free_web_search(
+            f"{product} HS code",
+            max_results=5,
+            followups=[f"{product} harmonized system tariff code"],
+        )
+        search_ok = bool(found.ok)
+        parts = []
+        for item in (found.data or {}).get("results") or []:
+            parts.append(" ".join(str(item.get(key) or "") for key in ("title", "snippet", "url")))
+        source_text = "\n".join(parts)[:4000]
+    except Exception:
+        search_ok = False
+    confirmed = None
+    if search_ok and source_text and hasattr(llm, "confirm_hs"):
+        try:
+            confirmed = llm.confirm_hs(product, source_text)  # type: ignore[attr-defined]
+        except Exception:
+            confirmed = None
+    return accept_hs_evidence(
+        hypothesis=hypothesis,
+        confirmed=confirmed if isinstance(confirmed, str) else None,
+        source_text=source_text,
+        search_ok=search_ok,
+    )
+
+
 class ToolExecutor:
     def __init__(
         self,
@@ -262,6 +296,8 @@ class ToolExecutor:
                     raise
                 reserved = True
                 self.budget = budget_mod.ensure_run_budget(self.db, self.run_id)
+                if not stub:
+                    hs, conf = _hs_from_evidence(self.llm, product, hs)
             elif hs_hint:
                 hs, conf = str(hs_hint), "medium"
             return ToolResult(

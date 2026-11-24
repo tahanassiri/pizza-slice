@@ -19,6 +19,7 @@ from app.agents.llm_decide import (
     pending_steps,
 )
 from app.agents.loop_safety import action_signature, operational_stop
+from app.agents.research_phase import buyer_research_blocked, premature_market_stop
 from app.agents.market_scorer import score_from_evidence_markets
 from app.agents.tool_contracts import ToolCall
 from app.evidence.store import evidence_index_for_run, record_claim
@@ -371,6 +372,8 @@ async def run_decision_loop(
             open_questions=list(state["open_questions"]),
             budget_left=left,
         )
+        if checkpoint.get("phase_feedback"):
+            context["_correction"] = str(checkpoint["phase_feedback"])
         action: AgentAction | None = None
         pending = checkpoint.get("pending_decision") or {}
         if pending.get("iteration") == iteration and pending.get("raw"):
@@ -459,6 +462,27 @@ async def run_decision_loop(
             event_id=f"evt_{run.id}_decision_{iteration}",
         )
         if action.action in {"conclude", "ask_user", "blocked"}:
+            feedback = premature_market_stop(action.action, tools_invoked, state["tool_trace"])
+            if feedback:
+                checkpoint["phase_feedback"] = feedback
+                signature = action_signature(action.action, action.tool, action.args or {})
+                if signature == last_signature:
+                    repeated += 1
+                else:
+                    repeated = 1
+                    last_signature = signature
+                _remember_safety()
+                repeated_cap = safety.get("max_repeated_actions")
+                repeated_cap = 3 if repeated_cap is None else int(repeated_cap)
+                if repeated_cap > 0 and repeated > repeated_cap:
+                    final_action = blocked_action(
+                        "MARKET_DISCOVERY_INCOMPLETE",
+                        feedback + " شواهد جمع‌شده حفظ شد.",
+                    )
+                    break
+                iteration += 1
+                continue
+            checkpoint["phase_feedback"] = ""
             final_action = action
             break
         signature = action_signature(action.action, action.tool, action.args or {})
@@ -489,6 +513,23 @@ async def run_decision_loop(
         if action.action != "call_tool" or not action.tool:
             final_action = blocked_action("LLM_INVALID", "اقدام مدل قابل اجرا نبود.")
             break
+        buyer_feedback = buyer_research_blocked(action.tool, run.selected_country)
+        if buyer_feedback:
+            checkpoint["phase_feedback"] = buyer_feedback
+            signature = action_signature(action.action, action.tool, action.args or {})
+            if signature == last_signature:
+                repeated += 1
+            else:
+                repeated = 1
+                last_signature = signature
+            _remember_safety()
+            repeated_cap = safety.get("max_repeated_actions")
+            repeated_cap = 3 if repeated_cap is None else int(repeated_cap)
+            if repeated_cap > 0 and repeated > repeated_cap:
+                final_action = blocked_action("BUYER_RESEARCH_BLOCKED", buyer_feedback)
+                break
+            iteration += 1
+            continue
         try:
             result = executor.execute(ToolCall(tool=action.tool, args=action.args or {}))
         except BudgetExceeded:

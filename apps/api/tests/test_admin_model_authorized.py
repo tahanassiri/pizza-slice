@@ -154,7 +154,17 @@ def test_selected_gemini_is_called_without_a_no_cost_gate(client, admin_token, m
     )
     assert stored.status_code == 200
 
-    with patch("app.providers.keyed.httpx.Client") as client_cls:
+    with patch("app.providers.keyed.httpx.Client") as client_cls, patch(
+        "app.tools.executor.free_web_search"
+    ) as search:
+        from app.agents.tool_contracts import ToolResult
+
+        search.return_value = ToolResult(
+            tool="search_web",
+            ok=False,
+            message_fa="جست‌وجو در این آزمون انجام نشد.",
+            error_code="WEB_SEARCH_BLOCKED",
+        )
         post = client_cls.return_value.__enter__.return_value.post
         post.return_value = _gemini_ok()
         run_id = client.post(
@@ -171,8 +181,9 @@ def test_selected_gemini_is_called_without_a_no_cost_gate(client, admin_token, m
     text = json.dumps(snap, ensure_ascii=False)
     assert secret not in text
     assert "بدون‌هزینه" not in text
-    assert "شواهد امارات برای زعفران کافی نیست" in snap["report"]["summary_fa"]
+    assert "کشف بازار" in snap["report"]["summary_fa"]
     assert snap["markets"] == []
+    assert snap["run"]["error"]["code"] == "MARKET_DISCOVERY_INCOMPLETE"
 
 
 def test_billing_failure_is_shown_and_not_retried_as_another_model(client, admin_token, monkeypatch):
