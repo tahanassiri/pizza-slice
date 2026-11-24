@@ -25,6 +25,43 @@ const DOCUMENTED_ROUTERS: RouterProvider[] = [
   },
 ];
 
+function methodLabel(value: string): string {
+  const labels: Record<string, string> = {
+    json_schema: "طرح JSON",
+    json_object: "شیء JSON",
+    function: "فراخوانی تابع",
+    prompt: "سازگاری با پرامپت",
+  };
+  return labels[value] ?? value;
+}
+
+function failureLabel(value: string): string {
+  const labels: Record<string, string> = {
+    malformed: "JSON نامعتبر",
+    empty: "پاسخ خالی",
+    truncated: "پاسخ ناقص",
+    unsupported: "پشتیبانی نشد",
+    temporary: "خطای موقت",
+    auth: "احراز هویت",
+    provider_error: "خطای سرویس",
+    schema: "طرح نخواند",
+    ok: "سالم",
+  };
+  return labels[value] ?? value;
+}
+
+function capabilityLabel(value: string): string {
+  const labels: Record<string, string> = {
+    capable: "مجاز برای پژوهش",
+    failed: "ناموفق",
+    unchecked: "بررسی نشده",
+    partial: "ناقص — رد دائمی نیست",
+    unsupported: "خروجی ساختاریافته پشتیبانی نشد",
+    temporary: "خطای موقت — مدل رد نشد",
+  };
+  return labels[value] ?? value;
+}
+
 function liveApiBase(): string {
   if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE_URL !== undefined) {
     return String(process.env.NEXT_PUBLIC_API_BASE_URL).replace(/\/$/, "");
@@ -45,6 +82,14 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
   const activeRouter = routers.find((item) => item.id === routerId) ?? routers[0];
   const [keyDraft, setKeyDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [safety, setSafety] = useState(
+    settings.safety ?? {
+      max_consecutive_invalid: 3,
+      max_repeated_actions: 3,
+      max_runtime_seconds: 1800,
+      max_run_tokens: 200000,
+    }
+  );
   const [selectedModel, setSelectedModel] = useState(settings.selected_model);
   const [models, setModels] = useState<LlmModelOption[]>(settings.llm_models ?? []);
   const groups = useMemo(() => {
@@ -70,6 +115,28 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     };
+  }
+
+  async function saveSafety() {
+    setBusy(true);
+    try {
+      if (isMock) {
+        setMessage("سقف عملیاتی نمایشی ذخیره شد.");
+        return;
+      }
+      const base = liveApiBase();
+      const res = await fetch(`${base}/api/admin/safety`, {
+        method: "PUT",
+        headers: await authHeaders(),
+        body: JSON.stringify(safety),
+      });
+      if (!res.ok) throw new Error("fail");
+      setMessage("سقف عملیاتی ذخیره شد. مدل انتخاب‌شده عوض نشد.");
+    } catch {
+      setMessage(fa.error.generic);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function selectModel(modelId: string) {
@@ -455,7 +522,20 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
           {activeRouter.base_url}
         </p>
         <p className="text-xs text-[var(--ink-muted)]">
-          کلید: {activeRouter.has_key_configured ? "ذخیره شده" : "نیست"} · توانایی پژوهش: {activeRouter.capability}
+          ارائه‌دهنده: {activeRouter.label_fa}
+          {activeRouter.selected_model ? ` · مدل: ${activeRouter.selected_model}` : " · مدلی انتخاب نشده"}
+          {" · "}
+          اتصال کلید: {activeRouter.has_key_configured ? "ذخیره شده" : "نیست"}
+        </p>
+        <p className="text-xs text-[var(--ink-muted)]">
+          توانایی پژوهش: {capabilityLabel(activeRouter.capability)}
+          {activeRouter.output_method ? ` · روش خروجی: ${methodLabel(activeRouter.output_method)}` : ""}
+          {activeRouter.failure_category ? ` · دسته خطا: ${failureLabel(activeRouter.failure_category)}` : ""}
+        </p>
+        <p className="text-xs text-[var(--ink-muted)]">
+          توکن آزمون: {activeRouter.tokens_used ?? 0}
+          {" · "}
+          هزینه برآوردی: {activeRouter.estimated_cost_usd ? `$${activeRouter.estimated_cost_usd}` : "در پاسخ روتر نیامد"}
         </p>
         <label className="nova-label" htmlFor="router-key">
           کلید روتر
@@ -518,6 +598,34 @@ export function ProviderSettings({ settings }: { settings: AdminSettingsView }) 
           </button>
         </div>
         <p role="status" className="break-words text-sm text-[var(--ink-muted)]">{routerMessage}</p>
+      </section>
+
+      <section className="nova-panel min-w-0 overflow-hidden p-4 sm:p-5">
+        <h2 className="mb-2 font-semibold text-white">سقف عملیاتی پژوهش</h2>
+        <p className="mb-3 text-sm text-[var(--ink-muted)]">
+          این سقف‌ها عمق تحقیق را قطع نمی‌کنند. صفر یعنی آن مورد خاموش است. مدل انتخاب‌شده عوض نمی‌شود.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="nova-label">
+            پاسخ نامعتبر پیاپی
+            <input className="nova-input" type="number" min={0} value={safety.max_consecutive_invalid} onChange={(event) => setSafety({ ...safety, max_consecutive_invalid: Number(event.target.value) })} />
+          </label>
+          <label className="nova-label">
+            تکرار همان اقدام
+            <input className="nova-input" type="number" min={0} value={safety.max_repeated_actions} onChange={(event) => setSafety({ ...safety, max_repeated_actions: Number(event.target.value) })} />
+          </label>
+          <label className="nova-label">
+            حداکثر زمان اجرا (ثانیه)
+            <input className="nova-input" type="number" min={0} value={safety.max_runtime_seconds} onChange={(event) => setSafety({ ...safety, max_runtime_seconds: Number(event.target.value) })} />
+          </label>
+          <label className="nova-label">
+            حداکثر توکن اجرا
+            <input className="nova-input" type="number" min={0} value={safety.max_run_tokens} onChange={(event) => setSafety({ ...safety, max_run_tokens: Number(event.target.value) })} />
+          </label>
+        </div>
+        <button type="button" className="nova-btn-ghost mt-3 !px-4 !py-2 text-xs" disabled={busy} onClick={() => void saveSafety()}>
+          ذخیره سقف عملیاتی
+        </button>
       </section>
 
       <section className="nova-panel min-w-0 overflow-hidden p-4 sm:p-5">

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy.orm import Session
@@ -12,10 +13,12 @@ from app.agents.llm_decide import (
     AgentAction,
     blocked_action,
     build_decision_context,
+    explain_decision,
     llm_is_research_decision_maker,
     parse_model_decision,
     pending_steps,
 )
+from app.agents.loop_safety import action_signature, operational_stop
 from app.agents.market_scorer import score_from_evidence_markets
 from app.agents.tool_contracts import ToolCall
 from app.evidence.store import evidence_index_for_run, record_claim
@@ -301,7 +304,58 @@ async def run_decision_loop(
 
     final_action: AgentAction | None = None
     evidence_index = evidence_index_for_run(db, run.id)
+    from app.services.admin_service import read_safety
+
+    safety = read_safety(db)
+    tokens_before = int(checkpoint.get("tokens_used") or 0)
+    session_started = time.monotonic()
+    invalid_streak = int(checkpoint.get("invalid_streak") or 0)
+    repeated = int(checkpoint.get("repeated_actions") or 0)
+    last_signature = str(checkpoint.get("last_signature") or "")
+
+    def _elapsed() -> float:
+        return float(checkpoint.get("active_seconds") or 0) + (time.monotonic() - session_started)
+
+    def _tokens() -> int:
+        return tokens_before + int(getattr(executor.llm, "tokens_used", 0) or 0)
+
+    def _cancelled() -> bool:
+        db.refresh(run)
+        return run.status == "cancelled"
+
+    def _remember_safety() -> None:
+        checkpoint["invalid_streak"] = invalid_streak
+        checkpoint["repeated_actions"] = repeated
+        checkpoint["last_signature"] = last_signature
+        checkpoint["active_seconds"] = _elapsed()
+        checkpoint["tokens_used"] = _tokens()
+        state["tokens_used"] = _tokens()
+        state["estimated_cost_usd"] = float(getattr(executor.llm, "cost_usd", 0) or 0)
+        state["output_method"] = str(getattr(executor.llm, "output_method", "") or "")
+
+    def _stop_for(code: str) -> AgentAction:
+        messages = {
+            "cancelled": "اجرا لغو شد. شواهد جمع‌شده حفظ شد و کار قابل ادامه است.",
+            "consecutive_invalid": "چند پاسخ پیاپی قابل اجرا نبود. شواهد حفظ شد و مدل دیگری انتخاب نشد.",
+            "no_progress": "همان اقدام بدون پیشرفت تکرار شد. شواهد حفظ شد.",
+            "runtime": "سقف زمان عملیاتی این اجرا رسید. شواهد حفظ شد و نتیجه ناقص قابل ادامه است.",
+            "spending": "سقف توکن این اجرا رسید. شواهد حفظ شد و نتیجه ناقص قابل ادامه است.",
+        }
+        return blocked_action(f"OPERATIONAL_{code.upper()}", messages.get(code, "حد عملیاتی رسید. شواهد حفظ شد."))
+
     while True:
+        _remember_safety()
+        stop = operational_stop(
+            invalid_streak=invalid_streak,
+            repeated=0,
+            elapsed_seconds=_elapsed(),
+            tokens=_tokens(),
+            limits=safety,
+            cancelled=_cancelled(),
+        )
+        if stop:
+            final_action = _stop_for(stop)
+            break
         if not persist():
             return _lease_lost(state, run)
         left = _budget_left(executor)
@@ -343,13 +397,50 @@ async def run_decision_loop(
                 break
             if getattr(executor.llm, "id", "") != "stub_llm":
                 _remember_model_status(db, "Verified")
-            action = parse_model_decision(raw)
+            action, note = explain_decision(raw)
+            if action is None:
+                invalid_streak += 1
+                _remember_safety()
+                if operational_stop(
+                    invalid_streak=invalid_streak,
+                    repeated=0,
+                    elapsed_seconds=_elapsed(),
+                    tokens=_tokens(),
+                    limits=safety,
+                    cancelled=False,
+                ) == "consecutive_invalid":
+                    final_action = _stop_for("consecutive_invalid")
+                    break
+                context["_correction"] = note
+                try:
+                    raw = guarded_model_call(
+                        db,
+                        run.id,
+                        "decide",
+                        lambda: _ask_model(executor.llm, context),
+                        provider_id=str(getattr(executor.llm, "id", "llm")),
+                    )
+                    executor.budget = ensure_run_budget(db, run.id)
+                except BudgetExceeded:
+                    iteration += 1
+                    continue
+                except ModelCallError as exc:
+                    _remember_model_status(db, exc.status)
+                    final_action = blocked_action(
+                        _MODEL_CODE.get(exc.status, "MODEL_FAILED"),
+                        exc.message_fa,
+                    )
+                    break
+                action = parse_model_decision(raw)
             if action:
+                invalid_streak = 0
                 checkpoint["pending_decision"] = {"iteration": iteration, "raw": raw}
+                _remember_safety()
                 if not persist():
                     return _lease_lost(state, run)
         if action is None:
             iteration += 1
+            _remember_safety()
             continue
 
         await emit(
@@ -369,6 +460,18 @@ async def run_decision_loop(
         )
         if action.action in {"conclude", "ask_user", "blocked"}:
             final_action = action
+            break
+        signature = action_signature(action.action, action.tool, action.args or {})
+        if signature == last_signature:
+            repeated += 1
+        else:
+            repeated = 1
+            last_signature = signature
+        _remember_safety()
+        repeated_cap = safety.get("max_repeated_actions")
+        repeated_cap = 3 if repeated_cap is None else int(repeated_cap)
+        if repeated_cap > 0 and repeated > repeated_cap:
+            final_action = _stop_for("no_progress")
             break
         if action.action == "change_strategy":
             state["open_questions"].append("راهبرد تغییر کرد — منابع جایگزین لازم است")
@@ -582,6 +685,12 @@ async def _finish(db, run, executor, emit, state, final_action, markets, memory_
         message = (
             f"پایان حلقه مدل: {len(recommended)} پیشنهاد، {len(risky)} پرریسک — {final_action.rationale_fa}"
         )
+    tokens = int(state.get("tokens_used") or 0)
+    if tokens:
+        message += f" — توکن: {tokens}"
+        cost = float(state.get("estimated_cost_usd") or 0)
+        if cost:
+            message += f" — هزینه برآوردی: ${cost:.4f}"
     await emit(
         db,
         run,
@@ -602,6 +711,9 @@ async def _finish(db, run, executor, emit, state, final_action, markets, memory_
                 dict.fromkeys([*(state.get("unknowns") or []), *final_action.unknowns])
             ),
             "tools_invoked": tools_invoked,
+            "tokens_used": int(state.get("tokens_used") or 0),
+            "estimated_cost_usd": float(state.get("estimated_cost_usd") or 0),
+            "output_method": state.get("output_method") or "",
         },
         error_code=final_action.blocked_code or final_action.stop_reason if blocked or not markets else None,
         event_id=f"evt_{run.id}_market_compare",

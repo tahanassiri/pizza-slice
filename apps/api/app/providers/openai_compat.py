@@ -6,6 +6,7 @@ at an arbitrary host. Research clearance is a separate capability check.
 
 from __future__ import annotations
 
+import json
 import re
 from urllib.parse import urlparse
 
@@ -31,7 +32,7 @@ ROUTER_PROVIDERS: dict[str, dict[str, str]] = {
 
 ALLOWED_HOSTS = frozenset(item["host"] for item in ROUTER_PROVIDERS.values())
 _MODEL_ID = re.compile(r"^[A-Za-z0-9_.:/~-]{1,160}$")
-ROUTER_TIMEOUT = 30.0
+ROUTER_TIMEOUT = 120.0
 
 
 class RouterURLError(ValueError):
@@ -111,6 +112,11 @@ class OpenAICompatLLM:
         self.model = model
         self.base_url = assert_router_url(canonical_base(provider_id))
         self.timeout = timeout
+        self.tokens_used = 0
+        self.cost_usd = 0.0
+        self.output_method = "prompt"
+        self._params: list[str] | None = None
+        self._completion_limit: int | None = None
 
     def _request(self, method: str, path: str, *, json_body: dict | None = None) -> httpx.Response:
         url = assert_router_url(f"{self.base_url}/{path.lstrip('/')}")
@@ -137,20 +143,168 @@ class OpenAICompatLLM:
             )
         return response
 
-    def _chat(self, prompt: str, *, max_tokens: int) -> str:
-        response = self._request(
-            "POST",
-            "chat/completions",
-            json_body={
-                "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0,
-                "max_tokens": max_tokens,
-            },
-        )
+    def supported_parameters(self) -> list[str]:
+        if self._params is not None:
+            return self._params
+        self._params = []
+        try:
+            response = self._request("GET", "models")
+        except ModelCallError:
+            return []
         if response.status_code != 200:
-            raise _failure(self.model, http_status=response.status_code, body=response.text)
-        return (response.json().get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+            return []
+        payload = response.json()
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        for item in rows or []:
+            if not isinstance(item, dict) or item.get("id") != self.model:
+                continue
+            self._params = [str(param) for param in (item.get("supported_parameters") or [])]
+            top = item.get("top_provider") if isinstance(item.get("top_provider"), dict) else {}
+            limit = top.get("max_completion_tokens") or item.get("max_completion_tokens")
+            if isinstance(limit, int) and limit > 0:
+                self._completion_limit = limit
+            break
+        return self._params
+
+    def _chat(self, prompt: str, *, max_tokens: int) -> str:
+        result = self.complete_structured(
+            prompt,
+            schema=None,
+            schema_name="text",
+            purpose="classify" if max_tokens <= 128 else "decide",
+            correction="",
+            force_method="prompt",
+        )
+        if result.category in {"temporary", "auth", "provider_error"}:
+            raise _failure(self.model, http_status=result.http_status, body="", error=result.category)
+        return result.content
+
+    def complete_structured(
+        self,
+        prompt: str,
+        schema: dict | None,
+        *,
+        schema_name: str,
+        purpose: str,
+        correction: str = "",
+        force_method: str | None = None,
+    ):
+        from app.providers.response_norm import extract_json_value, log_call, parse_chat_completion
+        from app.providers.structured_request import (
+            StructuredResult,
+            next_method,
+            output_budget,
+            parameter_rejected,
+            request_body,
+            select_output_method,
+        )
+
+        method = force_method or select_output_method(self.supported_parameters() if force_method is None else [])
+        self.output_method = method
+        initial, ceiling = output_budget(purpose, self._completion_limit)
+        tokens = initial
+        length_retried = False
+        seen: set[str] = set()
+        last = StructuredResult(method=method, message_fa="پاسخی برنگشت. مدل دیگری انتخاب نشد.")
+        while method and method not in seen:
+            seen.add(method)
+            body = request_body(
+                model=self.model,
+                prompt=prompt,
+                method=method,
+                schema=schema,
+                schema_name=schema_name,
+                max_tokens=tokens,
+                correction=correction,
+            )
+            try:
+                response = self._request("POST", "chat/completions", json_body=body)
+            except ModelCallError as exc:
+                return StructuredResult(
+                    method=method,
+                    category="temporary" if exc.http_status is None else "provider_error",
+                    http_status=exc.http_status,
+                    message_fa=exc.message_fa,
+                )
+            if parameter_rejected(response.status_code, response.text) and force_method is None:
+                method = next_method(method)
+                if method:
+                    self.output_method = method
+                continue
+            if response.status_code != 200:
+                category = "auth" if response.status_code in {401, 403} else "provider_error"
+                if response.status_code in {429, 503} or response.status_code >= 500:
+                    category = "temporary"
+                last = StructuredResult(
+                    method=self.output_method,
+                    category=category,
+                    http_status=response.status_code,
+                    message_fa=_failure(
+                        self.model, http_status=response.status_code, body=response.text
+                    ).message_fa,
+                )
+                log_call(
+                    model=self.model,
+                    method=self.output_method,
+                    http_status=response.status_code,
+                    finish_reason="",
+                    usage={},
+                    truncated=False,
+                    category=category,
+                    provider_name="",
+                )
+                return last
+            outcome = parse_chat_completion(response.json(), http_status=200)
+            self.tokens_used += int(outcome.usage.get("total_tokens") or 0)
+            if outcome.cost:
+                self.cost_usd += float(outcome.cost)
+            log_call(
+                model=self.model,
+                method=method,
+                http_status=200,
+                finish_reason=outcome.finish_reason,
+                usage=outcome.usage,
+                truncated=outcome.truncated,
+                category=outcome.error_category or "ok",
+                provider_name=outcome.provider_name,
+            )
+            if outcome.truncated and not length_retried and tokens < ceiling:
+                if extract_json_value(outcome.content) is None:
+                    length_retried = True
+                    tokens = min(ceiling, max(tokens * 2, tokens + 256))
+                    seen.discard(method)
+                    continue
+            if outcome.error_category == "provider_error":
+                return StructuredResult(
+                    method=method,
+                    category="provider_error",
+                    finish_reason=outcome.finish_reason,
+                    usage=outcome.usage,
+                    truncated=outcome.truncated,
+                    provider_name=outcome.provider_name,
+                    http_status=200,
+                    message_fa="پاسخ سرویس خطا داشت. مدل دیگری انتخاب نشد.",
+                )
+            data = extract_json_value(outcome.content)
+            category = outcome.error_category or ("ok" if data is not None else "malformed")
+            if outcome.truncated and data is None:
+                category = "truncated"
+            return StructuredResult(
+                ok=data is not None and category == "ok",
+                content="" if data is None else json.dumps(data, ensure_ascii=False),
+                data=data,
+                method=method,
+                category=category,
+                finish_reason=outcome.finish_reason,
+                usage=outcome.usage,
+                truncated=outcome.truncated,
+                provider_name=outcome.provider_name,
+                http_status=200,
+                message_fa="",
+            )
+        last.category = "unsupported"
+        last.message_fa = "خروجی ساختاریافته روی این نقطهٔ پایانی پشتیبانی نشد. مدل دیگری انتخاب نشد."
+        return last
 
     def list_model_ids(self) -> list[str]:
         response = self._request("GET", "models")
@@ -186,9 +340,130 @@ class OpenAICompatLLM:
         return _digits_hs(self._chat(_HS_PROMPT.format(product=product), max_tokens=32))
 
     def decide_research_action(self, context: dict) -> str:
+        from app.agents.decision_schema import AGENT_ACTION_JSON_SCHEMA
         from app.agents.llm_decide import render_decision_prompt
 
-        return self._chat(render_decision_prompt(context), max_tokens=1024)
+        correction = str(context.get("_correction") or "")
+        result = self.complete_structured(
+            render_decision_prompt(context),
+            AGENT_ACTION_JSON_SCHEMA,
+            schema_name="nova_decision",
+            purpose="decide",
+            correction=correction,
+        )
+        if result.category in {"temporary", "auth", "provider_error"}:
+            raise _failure(
+                self.model,
+                http_status=result.http_status,
+                body="",
+                error="timeout" if result.http_status is None else None,
+            )
+        return result.content
+
+    def capability_probe(self):
+        from app.agents.decision_schema import AGENT_ACTION_JSON_SCHEMA, MINIMAL_JSON_SCHEMA
+        from app.agents.llm_decide import explain_decision
+        from app.providers.structured_request import StructuredResult
+
+        basic_prompt = 'Return only {"ok": true}.'
+        decision_prompt = (
+            "Return one conclude action for a capability check. "
+            "tool is null, args_json is {}, rationale_fa is a short Persian sentence, "
+            "stop_reason is sufficient, market_proposals is [], unknowns is [], conflicts is []. "
+            "Do not call tools and do not invent evidence."
+        )
+
+        def pack(status: str, category: str, method: str, message_fa: str) -> StructuredResult:
+            return StructuredResult(
+                ok=status == "capable",
+                method=method,
+                category=category,
+                message_fa=message_fa,
+                content=status,
+            )
+
+        basic = self.complete_structured(
+            basic_prompt,
+            MINIMAL_JSON_SCHEMA,
+            schema_name="basic_json",
+            purpose="capability-basic",
+        )
+        if basic.category in {"temporary", "auth", "provider_error"}:
+            return pack(
+                "temporary",
+                basic.category,
+                basic.method,
+                basic.message_fa or "سرویس موقتاً پاسخ نداد. مدل رد نشد و مدل دیگری انتخاب نشد.",
+            )
+        if not basic.ok:
+            if basic.category == "unsupported":
+                return pack(
+                    "unsupported",
+                    "unsupported",
+                    basic.method,
+                    "این نقطهٔ پایانی خروجی ساختاریافته را برنگرداند. مدل دیگری انتخاب نشد.",
+                )
+            return pack(
+                "partial",
+                basic.category or "malformed",
+                basic.method,
+                "آزمون JSON ساده ناموفق بود. این یک رد دائمی مدل نیست و مدل دیگری انتخاب نشد.",
+            )
+        decision = self.complete_structured(
+            decision_prompt,
+            AGENT_ACTION_JSON_SCHEMA,
+            schema_name="nova_decision",
+            purpose="capability-decision",
+        )
+        try:
+            action, note = explain_decision(decision.data if decision.ok else decision.content)
+        except Exception:
+            action, note = None, "طرح تصمیم نخواند."
+        if action is None and decision.category not in {"temporary", "auth", "provider_error"}:
+            decision = self.complete_structured(
+                decision_prompt,
+                AGENT_ACTION_JSON_SCHEMA,
+                schema_name="nova_decision",
+                purpose="capability-decision",
+                correction=note,
+            )
+            try:
+                action, note = explain_decision(decision.data if decision.ok else decision.content)
+            except Exception:
+                action, note = None, "طرح تصمیم نخواند."
+        if decision.category in {"temporary", "auth", "provider_error"}:
+            return pack("temporary", decision.category, decision.method, decision.message_fa)
+        if action is None:
+            category = "truncated" if decision.truncated else (decision.category or "schema")
+            return pack(
+                "partial",
+                category,
+                decision.method,
+                "JSON ساده برگشت اما تصمیم NOVA این بار معتبر نبود. مدل برای همیشه رد نشد و مدل دیگری انتخاب نشد.",
+            )
+        method_fa = {
+            "json_schema": "طرح JSON",
+            "json_object": "شیء JSON",
+            "function": "فراخوانی تابع",
+            "prompt": "سازگاری با پرامپت",
+        }.get(decision.method, decision.method)
+        return pack(
+            "capable",
+            "ok",
+            decision.method,
+            f"مدل با روش {method_fa} تصمیم JSON معتبر برگرداند و برای پژوهش همین شناسه مجاز است. تعویض خودکار انجام نشد.",
+        )
 
     def complete_json(self, prompt: str) -> str:
-        return self._chat(prompt, max_tokens=256)
+        """Connection ping and other plain calls. Structured research uses complete_structured."""
+
+        result = self.complete_structured(
+            prompt,
+            schema=None,
+            schema_name="text",
+            purpose="classify",
+            force_method="prompt",
+        )
+        if result.category in {"temporary", "auth", "provider_error"}:
+            raise _failure(self.model, http_status=result.http_status, body="", error=result.category)
+        return result.content or "ok"

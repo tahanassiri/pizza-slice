@@ -61,4 +61,16 @@ test.describe("NOVA Persian home smoke", () => {
       timeout: 15_000,
     });
   });
+
+  test("admin panel shows structured-output status and safety controls", async ({ page }) => {
+    await page.goto("/admin/login");
+    await page.locator("#username").fill("admin");
+    await page.locator("#password").fill("nova-dev-change-me");
+    await page.getByRole("button", { name: "ورود" }).click();
+    await expect(page).toHaveURL(/\/admin$/, { timeout: 20_000 });
+    await expect(page.getByText("سقف عملیاتی پژوهش")).toBeVisible();
+    await expect(page.getByText("توانایی پژوهش")).toBeVisible();
+    await expect(page.getByRole("button", { name: "ذخیره سقف عملیاتی" })).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+  });
 });

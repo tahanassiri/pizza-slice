@@ -7,7 +7,6 @@ returns a recoverable blocked status. There is no heuristic substitute.
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -133,26 +132,27 @@ def build_decision_context(
     }
 
 
+def explain_decision(raw: str | dict | None) -> tuple[AgentAction | None, str]:
+    """Validate one reply. The note is safe to show; it never includes the payload."""
+
+    from app.agents.decision_schema import validate_decision
+    from app.providers.response_norm import extract_json_value
+
+    if raw is None:
+        return None, "پاسخ خالی بود."
+    if isinstance(raw, dict):
+        data: Any = raw
+    elif isinstance(raw, str):
+        data = extract_json_value(raw)
+    else:
+        return None, "قالب پاسخ متن یا شیء نبود."
+    if data is None:
+        return None, "JSON قابل خواندن نبود."
+    return validate_decision(data)
+
+
 def _parse_action(text: str) -> AgentAction | None:
-    text = (text or "").strip()
-    if not text:
-        return None
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(0))
-        action = AgentAction.model_validate(data)
-    except Exception:
-        return None
-    if action.action == "blocked":
-        return None
-    if action.action == "call_tool":
-        if not action.tool or action.tool not in ALLOWED_TOOLS:
-            return None
-        if not isinstance(action.args, dict):
-            return None
-    action.decision_source = "llm"
+    action, _note = explain_decision(text)
     return action
 
 
@@ -167,11 +167,8 @@ def llm_is_research_decision_maker(llm: object | None) -> bool:
 
 
 def parse_model_decision(raw: str | dict | None) -> AgentAction | None:
-    if raw is None:
-        return None
-    if isinstance(raw, dict):
-        raw = json.dumps(raw)
-    return _parse_action(raw)
+    action, _note = explain_decision(raw)
+    return action
 
 
 DECISION_USER_TEMPLATE = (

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -263,6 +265,7 @@ def settings_view(db: Session) -> AdminSettingsOut:
         llm_models=llm_models_view(db),
         llm_groups=catalog_grouped(),
         routers=routers_view(db),
+        safety=read_safety(db),
         trade_sources=trade_sources_view(db),
         connection_message_fa=(
             "کلید هر نسخه مدل جداگانه رمزنگاری می‌شود. "
@@ -342,7 +345,10 @@ def set_model(db: Session, model: str, provider: str | None = None) -> str:
 
 
 def _capability_key(provider_id: str, model_id: str) -> str:
-    return f"router_capability::{provider_id}::{model_id}"
+    raw = f"router_capability::{provider_id}::{model_id}"
+    if len(raw) <= 64:
+        return raw
+    return "rcap:" + hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def _router_row(db: Session, provider_id: str) -> ProviderSetting:
@@ -372,11 +378,70 @@ def get_router_api_key(db: Session, provider_id: str) -> str | None:
     return plain or None
 
 
+_CAPABILITY_VALUES = {"capable", "failed", "unchecked", "partial", "unsupported", "temporary"}
+
+
 def read_router_capability(db: Session, provider_id: str, model_id: str) -> str:
     row = db.get(AppMeta, _capability_key(provider_id, model_id))
-    if row and row.value in {"capable", "failed", "unchecked"}:
+    if row and row.value in _CAPABILITY_VALUES:
         return row.value
     return "unchecked"
+
+
+def _router_detail_key(provider_id: str, model_id: str, kind: str) -> str:
+    digest = hashlib.sha256(f"{provider_id}:{model_id}".encode()).hexdigest()[:16]
+    prefix = {"method": "rmet", "failure": "rerr", "usage": "ruse"}.get(kind, "rdet")
+    return f"{prefix}:{digest}"
+
+
+def _router_usage(db: Session, provider_id: str, model_id: str) -> dict:
+    raw = read_router_detail(db, provider_id, model_id, "usage")
+    if not raw:
+        return {"tokens": 0, "cost": 0}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"tokens": 0, "cost": 0}
+    if not isinstance(parsed, dict):
+        return {"tokens": 0, "cost": 0}
+    return {"tokens": int(parsed.get("tokens") or 0), "cost": float(parsed.get("cost") or 0)}
+
+
+def read_safety(db: Session) -> dict:
+    from app.agents.loop_safety import DEFAULT_SAFETY
+
+    data = dict(DEFAULT_SAFETY)
+    row = db.get(AppMeta, "safety_settings")
+    if not row or not row.value:
+        return data
+    try:
+        parsed = json.loads(row.value)
+    except json.JSONDecodeError:
+        return data
+    if not isinstance(parsed, dict):
+        return data
+    for key in DEFAULT_SAFETY:
+        if key in parsed:
+            try:
+                data[key] = max(0, int(parsed[key]))
+            except (TypeError, ValueError):
+                continue
+    return data
+
+
+def update_safety(db: Session, payload: dict) -> dict:
+    current = read_safety(db)
+    for key in list(current):
+        if key in payload and payload[key] is not None:
+            current[key] = max(0, int(payload[key]))
+    _write_meta(db, "safety_settings", json.dumps(current))
+    db.commit()
+    return current
+
+
+def read_router_detail(db: Session, provider_id: str, model_id: str, kind: str) -> str:
+    row = db.get(AppMeta, _router_detail_key(provider_id, model_id, kind))
+    return row.value if row and row.value else ""
 
 
 def routers_view(db: Session) -> list[RouterProviderOut]:
@@ -394,6 +459,10 @@ def routers_view(db: Session) -> list[RouterProviderOut]:
                 has_key_configured=router_has_key(db, provider_id),
                 selected_model=selected,
                 capability=read_router_capability(db, provider_id, selected or ""),
+                output_method=read_router_detail(db, provider_id, selected or "", "method"),
+                failure_category=read_router_detail(db, provider_id, selected or "", "failure"),
+                tokens_used=_router_usage(db, provider_id, selected or "").get("tokens", 0),
+                estimated_cost_usd=_router_usage(db, provider_id, selected or "").get("cost", 0),
                 active=active_provider == provider_id and bool(selected),
             )
         )
@@ -528,9 +597,6 @@ def _capability_parse_failure(db: Session, provider_id: str, model_id: str) -> T
 
 
 def check_router_capability(db: Session, provider_id: str, model_id: str) -> TestConnectionOut:
-    from app.agents.llm_decide import parse_model_decision, render_decision_prompt
-    from app.providers.keyed import ModelCallError
-
     try:
         client = _router_client(db, provider_id, model_id)
     except Exception as exc:
@@ -539,34 +605,31 @@ def check_router_capability(db: Session, provider_id: str, model_id: str) -> Tes
         if isinstance(exc, AppError):
             return TestConnectionOut(ok=False, checked=False, connection_status="Failed", message_fa=exc.message_fa)
         raise
-    prompt = render_decision_prompt(
-        {
-            "product": "capability-check",
-            "origin": "capability-check",
-            "evidence": [],
-            "instruction": "Return one conclude action. Do not call tools.",
-        }
+    probe = client.capability_probe()
+    status = "capable" if probe.ok else (probe.content or "partial")
+    _write_meta(db, _router_detail_key(provider_id, model_id, "method"), probe.method or "")
+    _write_meta(db, _router_detail_key(provider_id, model_id, "failure"), "" if probe.ok else (probe.category or ""))
+    _write_meta(
+        db,
+        _router_detail_key(provider_id, model_id, "usage"),
+        json.dumps(
+            {
+                "tokens": int(getattr(client, "tokens_used", 0) or 0),
+                "cost": round(float(getattr(client, "cost_usd", 0) or 0), 6),
+            }
+        ),
     )
-    try:
-        raw = client.complete_json(prompt)
-    except ModelCallError as exc:
-        _write_meta(db, _capability_key(provider_id, model_id), "failed")
-        db.commit()
-        return TestConnectionOut(ok=False, checked=True, connection_status=exc.status, message_fa=exc.message_fa)
-    try:
-        # A list or other payload is not decision text. Do not stringify it into the response.
-        parsed = parse_model_decision(raw) if isinstance(raw, (str, dict)) else None
-    except Exception:
-        parsed = None
-    if parsed is None:
-        return _capability_parse_failure(db, provider_id, model_id)
-    _write_meta(db, _capability_key(provider_id, model_id), "capable")
+    current = read_router_capability(db, provider_id, model_id)
+    keep_capable = current == "capable" and status in {"partial", "temporary"}
+    if status != "temporary" and not keep_capable:
+        _write_meta(db, _capability_key(provider_id, model_id), status if status in _CAPABILITY_VALUES else "partial")
     db.commit()
+    connection = "Verified" if probe.ok else ("Unavailable" if status == "temporary" else "Failed")
     return TestConnectionOut(
-        ok=True,
+        ok=probe.ok,
         checked=True,
-        connection_status="Verified",
-        message_fa="مدل این تصمیم JSON را برگرداند و برای پژوهش همین شناسه مجاز است. تعویض خودکار انجام نشد.",
+        connection_status=connection,
+        message_fa=probe.message_fa or CAPABILITY_PARSE_FAIL_FA,
     )
 
 

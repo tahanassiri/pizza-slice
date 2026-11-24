@@ -288,7 +288,18 @@ class RouterProviderOut(BaseModel):
     has_key_configured: bool = False
     selected_model: str | None = None
     capability: str = "unchecked"
+    output_method: str = ""
+    failure_category: str = ""
+    tokens_used: int = 0
+    estimated_cost_usd: float = 0
     active: bool = False
+
+
+class SafetySettingsOut(BaseModel):
+    max_consecutive_invalid: int = 3
+    max_repeated_actions: int = 3
+    max_runtime_seconds: int = 1800
+    max_run_tokens: int = 200_000
 
 
 class AdminSettingsOut(BaseModel):
@@ -298,6 +309,7 @@ class AdminSettingsOut(BaseModel):
     llm_models: list[LlmModelOptionOut] = []
     llm_groups: list[dict] = []
     routers: list[RouterProviderOut] = []
+    safety: SafetySettingsOut = SafetySettingsOut()
     trade_sources: list[TradeSourceStatusOut] = []
     connection_message_fa: str
     error_history: list[dict[str, str]]
