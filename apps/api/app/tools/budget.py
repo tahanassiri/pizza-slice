@@ -130,7 +130,9 @@ def consume(
     if budget.scope != "global":
         targets.append((ensure_global_budget(db), True))
     for target, fleet in targets:
-        if _used(target, kind) + units > _cap(target, kind):
+        # Model-call count is recorded only. It must not stop a run.
+        # Search and page caps still apply, including the fleet row.
+        if kind != "model" and _used(target, kind) + units > _cap(target, kind):
             raise BudgetExceeded(_limit_message(kind, fleet=fleet))
     for target, _fleet in targets:
         _add_used(target, kind, units)

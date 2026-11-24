@@ -522,8 +522,15 @@ def test_s9_13_budget_enforced_server_side(client, admin_token):
         b.model_calls_used = 0
         db.commit()
         consume(db, b, kind="model", units=1, run_id="run_budget_s9", tool_name="classify_product")
+        consume(db, b, kind="model", units=1, run_id="run_budget_s9", tool_name="classify_product")
+        db.refresh(b)
+        assert b.model_calls_used == 2
+        b.max_search_queries = 1
+        b.search_queries_used = 0
+        db.commit()
+        consume(db, b, kind="search", units=1, run_id="run_budget_s9", tool_name="search_web")
         try:
-            consume(db, b, kind="model", units=1, run_id="run_budget_s9", tool_name="classify_product")
+            consume(db, b, kind="search", units=1, run_id="run_budget_s9", tool_name="search_web")
             assert False
         except BudgetExceeded:
             pass

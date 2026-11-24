@@ -46,7 +46,8 @@ def _remember_model_status(db: Session, status: str) -> None:
 def _budget_left(executor: ToolExecutor) -> dict[str, int]:
     budget = executor.budget
     return {
-        "model": max(0, budget.max_model_calls - budget.model_calls_used),
+        # Model calls are counted elsewhere and do not stop this loop.
+        "model": 1000,
         "search": max(0, budget.max_search_queries - budget.search_queries_used),
         "pages": max(0, budget.max_pages - budget.pages_used),
     }
@@ -74,7 +75,8 @@ async def run_decision_loop(
 ) -> dict[str, Any]:
     ensure_run_budget(db, run.id)
     budget = executor.budget
-    max_iter = max_iterations or min(12, max(4, budget.max_model_calls))
+    # Iteration count is not the model-call budget. Wall time still ends the loop.
+    max_iter = max_iterations or 48
     retries = max(0, int(budget.max_retries or 0))
     wall = max(30, int(budget.max_wall_seconds or 180))
     started = time.monotonic()
@@ -320,15 +322,6 @@ async def run_decision_loop(
             )
             break
         left = _budget_left(executor)
-        if left["model"] <= 0:
-            final_action = AgentAction(
-                action="conclude",
-                stop_reason="budget_exhausted",
-                rationale_fa="بودجه مدل تمام شد",
-                decision_source="llm",
-                unknowns=["ادامه تحقیق نیازمند افزایش بودجه ادمین"],
-            )
-            break
         context = build_decision_context(
             product=run.product,
             origin=run.origin_country,

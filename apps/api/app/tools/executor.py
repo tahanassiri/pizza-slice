@@ -47,9 +47,6 @@ class ToolExecutor:
         if tool in {"fetch_page", "verify_company"}:
             if b.pages_used >= b.max_pages:
                 raise budget_mod.BudgetExceeded("سقف خواندن صفحه تمام شد.")
-        if tool in {"classify_product"}:
-            if b.model_calls_used >= b.max_model_calls:
-                raise budget_mod.BudgetExceeded("سقف فراخوانی مدل تمام شد.")
 
     def execute(self, call: ToolCall) -> ToolResult:
         if call.tool not in ALLOWED_TOOLS:

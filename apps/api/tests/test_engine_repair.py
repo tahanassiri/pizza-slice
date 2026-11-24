@@ -17,7 +17,7 @@ from app.events.store import append_event
 from app.jobs.durable import claim_task, create_task, recover_on_startup, renew_lease
 from app.models.entities import BuyerSearchRow, Run, RunEventRow
 from app.providers.model_clearance import classify_probe
-from app.tools.budget import BudgetExceeded, ensure_global_budget, ensure_run_budget, guarded_model_call
+from app.tools.budget import ensure_global_budget, ensure_run_budget, guarded_model_call
 from app.tools.free_web import free_web_search
 from app.tools.page_fetch import fetch_page
 
@@ -37,23 +37,24 @@ def test_budget_is_consumed_before_the_model_function():
     assert called["n"] == 1
 
 
-def test_exhausted_budget_does_not_call_the_model():
+def test_model_call_cap_does_not_stop_the_call():
     called = {"n": 0}
 
     def fn():
         called["n"] += 1
-        return "should-not-run"
+        return "ok"
 
     with SessionLocal() as db:
         row = ensure_run_budget(db, "run_capped")
         row.max_model_calls = 0
         db.commit()
-        with pytest.raises(BudgetExceeded):
-            guarded_model_call(db, "run_capped", "extract", fn)
-    assert called["n"] == 0
+        assert guarded_model_call(db, "run_capped", "extract", fn) == "ok"
+        db.refresh(row)
+        assert row.model_calls_used == 1
+    assert called["n"] == 1
 
 
-def test_global_cap_blocks_a_later_run():
+def test_global_model_cap_does_not_block_a_later_run():
     def fn():
         return "ok"
 
@@ -63,8 +64,7 @@ def test_global_cap_blocks_a_later_run():
         global_row.model_calls_used = 0
         db.commit()
         assert guarded_model_call(db, "run_g1", "classify", fn) == "ok"
-        with pytest.raises(BudgetExceeded):
-            guarded_model_call(db, "run_g2", "classify", fn)
+        assert guarded_model_call(db, "run_g2", "classify", fn) == "ok"
 
 
 def test_duplicate_event_id_is_not_inserted_twice():
