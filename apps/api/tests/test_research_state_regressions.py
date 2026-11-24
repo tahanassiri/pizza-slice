@@ -1,6 +1,8 @@
 import asyncio
 
 from app.agents.decision_loop import _store_claims, run_decision_loop
+from app.agents.decision_schema import validate_decision
+from app.agents.market_scorer import validate_market_proposal
 from app.agents.observations import compact_evidence, evidence_context, load_observations, page_read_status
 from app.agents.tool_contracts import ToolResult
 from app.db.session import SessionLocal
@@ -16,9 +18,10 @@ def test_run_claim_index_counts_unique_claims_and_never_truncates_the_ledger():
         db.add(run)
         db.commit()
         url = "https://example.com/tea"
-        claim = {"statement": "Germany imports tea from India.", "country": "DE"}
+        claim = {"statement": "Germany's tea imports come from India.", "country": "DE"}
+        encoded = {**claim, "statement": "Germany&#39;s tea imports come from India."}
         state = {"claims": []}
-        assert _store_claims(db, run, state, url, [claim, claim]) == 1
+        assert _store_claims(db, run, state, url, [claim, encoded]) == 1
         assert _store_claims(db, run, state, url, [claim]) == 0
         for i in range(27):
             record_claim(db, run_id=run.id, source_url=url, product_scope="tea", statement=f"Tea observation {i}")
@@ -33,6 +36,116 @@ def test_run_claim_index_counts_unique_claims_and_never_truncates_the_ledger():
 def test_failed_extraction_is_distinct_from_irrelevant_content():
     assert page_read_status(stored=0, raw_claims=0, extract_outcome="failed") == "extraction_failed"
     assert page_read_status(stored=0, raw_claims=0, extract_outcome="irrelevant") == "irrelevant"
+
+
+def test_fetch_source_has_a_typed_selector_outside_encoded_args():
+    action, note = validate_decision({
+        "action": "call_tool", "tool": "fetch_source", "source_id": "ev_a123",
+        "args_json": "{}",
+    })
+    assert note == "" and action is not None
+    assert action.args == {"source_id": "ev_a123"}
+    action, note = validate_decision({"action": "call_tool", "tool": "fetch_source", "source_id": ""})
+    assert action is None and "source_id" in note
+
+
+def test_trade_values_are_visible_without_the_full_reporter_link():
+    url = "https://example.com/tea"
+    long_link = "https://example.com/" + "country-path/" * 22
+    statement = (
+        f"Reporter: Germany ({long_link}); TradeFlow: Import; ProductCode: 090240; "
+        "Product Description: Tea; Year: 2024; Partner: India; Trade Value 1000USD: 6,133.10; "
+        "Quantity: 5,306; Quantity Unit: Kg"
+    )
+    with SessionLocal() as db:
+        ru = "run_trade_projection"
+        db.add(Run(id=ru, product="tea", origin_country="India"))
+        db.commit()
+        row = record_claim(db, run_id=ru, statement=statement, source_url=url, product_scope="tea")
+        ledger = compact_evidence(evidence_index_for_run(db, ru))
+        preview = evidence_context(ledger, set(), {})[0]
+        assert preview["trade"] == {
+            "reporter": "DE", "partner": "IN", "flow": "import", "year": "2024",
+            "trade_value": {"value": "6133.10", "unit": "USD thousands"},
+            "quantity": {"value": "5306", "unit": "Kg"},
+        }
+        assert long_link not in preview["statement"]
+        assert ledger[0]["statement"] == row.statement
+
+
+def test_world_exports_alone_do_not_support_a_destination_recommendation():
+    proposal = {"country_code": "DE", "recommendation": "recommended", "evidence_ids": ["cl_1"]}
+    row = {"id": "cl_1", "country": "DE", "product": "tea", "source_url": "https://example.com/tea",
+           "trade": {"reporter": "DE", "partner": "WLD", "flow": "export"}}
+    candidate, reason = validate_market_proposal(
+        proposal, product="tea", origin="India", evidence_index={"cl_1": row}, visible={"cl_1"},
+    )
+    assert candidate is None
+    assert reason == "no_destination_demand_or_purchase_evidence"
+
+
+def test_reserved_decision_synthesizes_after_repeated_invalid_fetch(monkeypatch):
+    source_url = "https://example.com/tea-imports"
+    contexts, events, fetched = [], [], []
+    monkeypatch.setattr(admin_service, "read_safety", lambda _db: {"max_consecutive_invalid": 3})
+
+    class Model:
+        id = "openrouter"
+        research_cleared = True
+
+        def decide_research_action(self, context):
+            contexts.append(context)
+            turn = len(contexts)
+            if turn == 1:
+                return {"action": "call_tool", "tool": "search_web", "args": {"query": "tea imports"}}
+            if turn == 2:
+                return {"action": "call_tool", "tool": "fetch_source", "source_id": context["sources"][0]["id"]}
+            if context.get("decision_mode") != "synthesis":
+                return {"action": "call_tool", "tool": "fetch_page", "args": {}}
+            assert context["allowed_actions"] == ["conclude", "ask_user"]
+            assert context["allowlisted_tools"] == []
+            claim = context["evidence"][0]
+            assert "Germany" in claim["statement"]
+            return {"action": "conclude", "stop_reason": "evidence_sufficient", "market_proposals": [
+                {"country_code": "DE", "recommendation": "recommended", "evidence_ids": [claim["id"]]},
+            ]}
+
+    class Executor:
+        llm = Model()
+        budget = None
+
+        def execute(self, call):
+            if call.tool == "search_web":
+                return ToolResult(tool=call.tool, ok=True, message_fa="", data={
+                    "results": [{"url": source_url, "title": "Germany tea imports"}],
+                })
+            if call.tool == "fetch_page":
+                fetched.append(call.args["url"])
+                return ToolResult(tool=call.tool, ok=True, message_fa="", data={
+                    "url": source_url, "text": "Germany imports significant volumes of tea from India annually.",
+                })
+            if call.tool == "extract_claims":
+                return extract_claims(text=call.args["text"], url=source_url, product="tea", origin="India")
+            if call.tool == "save_evidence":
+                return ToolResult(tool=call.tool, ok=True, message_fa="")
+            raise AssertionError(call.tool)
+
+    async def emit(_db, _run, **event):
+        events.append(event.get("payload") or {})
+
+    with SessionLocal() as db:
+        run = Run(id="run_reserved_synthesis", product="tea", origin_country="India", status="running")
+        db.add(run)
+        db.commit()
+        result = asyncio.run(run_decision_loop(db, run, Executor(), emit, checkpoint={
+            "completed_steps": ["classify", "memory"],
+        }))
+    assert fetched == [source_url]
+    assert len(contexts) == 5
+    assert result["stop_reason"] == "evidence_sufficient"
+    assert not result["provisional"]
+    assert [m.country_code for m in result["markets"]] == ["DE"]
+    assert [e["event_type"] for e in events if e.get("decision_mode") == "synthesis"] == ["research.decision"]
 
 
 def test_extraction_maps_destination_and_rejects_unrelated_trade_text():

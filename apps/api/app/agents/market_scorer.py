@@ -172,11 +172,26 @@ def _proposal_evidence_ids(proposal: dict) -> list[str]:
     return []
 
 
+def _trade_supports_criterion(row: dict, criterion: str, country: str, origin: str | None) -> bool:
+    trade = row.get("trade")
+    if not trade:
+        return True  # Prose remains bound to the model's cited destination and source.
+    reporter, partner, flow = trade.get("reporter"), trade.get("partner"), trade.get("flow")
+    if criterion == "competition":
+        return flow == "export" and reporter == country
+    if criterion not in {"demand", "access"}:
+        return False
+    if flow == "import":
+        return reporter == country and (criterion == "demand" or bool(origin and partner == origin))
+    return flow == "export" and partner == country and (criterion == "demand" or bool(origin and reporter == origin))
+
+
 def validate_market_proposal(
     proposal: dict, *, product: str, origin: str, evidence_index: dict, visible: set[str],
 ) -> tuple[dict | None, str]:
     code = country_code(str(proposal.get("country_code") or ""))
-    if not code or code == country_code(origin):
+    origin_code = country_code(origin)
+    if not code or code == origin_code:
         return None, "invalid_destination"
     ids = list(dict.fromkeys(_proposal_evidence_ids(proposal)))
     if not ids:
@@ -199,7 +214,12 @@ def validate_market_proposal(
         return None, "sector_or_total_is_not_product_evidence"
     if proposal.get("recommendation") not in {"recommended", "risky", "watch"}:
         return None, "invalid_recommendation"
-    ids = list(dict.fromkeys(row["id"] for row in rows))
+    if proposal["recommendation"] == "recommended" and not any(
+        _trade_supports_criterion(row, "demand", code, origin_code) for row in rows
+    ):
+        return None, "no_destination_demand_or_purchase_evidence"
+    by_id = {row["id"]: row for row in rows}
+    ids = list(by_id)
     criteria: dict[str, list[str]] = {}
     raw_criteria = proposal.get("criteria")
     for item in raw_criteria if isinstance(raw_criteria, list) else []:
@@ -208,7 +228,7 @@ def validate_market_proposal(
             continue
         refs = item.get("evidence_ids")
         if isinstance(refs, list):
-            refs = [ref for ref in ids if ref in refs]
+            refs = [ref for ref in ids if ref in refs and _trade_supports_criterion(by_id[ref], key, code, origin_code)]
             if refs:
                 criteria[key] = refs
     raw_risks = proposal.get("risks")

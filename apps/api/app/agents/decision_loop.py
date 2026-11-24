@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy.orm import Session
 
+from app.agents.decision_schema import SYNTHESIS_ACTIONS
 from app.agents.llm_decide import (
     AgentAction,
     blocked_action,
@@ -59,7 +60,7 @@ from app.schemas.contracts import Market, Source
 from app.providers.keyed import ModelCallError
 from app.tools.budget import BudgetExceeded, ensure_run_budget, guarded_model_call
 from app.tools.executor import ToolExecutor
-from app.tools.extract import country_code, country_mentions
+from app.tools.extract import canonical_claim_text, country_code, country_mentions
 
 _MODEL_CODE = {
     "Billing problem": "MODEL_BILLING",
@@ -456,6 +457,16 @@ async def run_decision_loop(
         evidence_rows = compact_evidence(evidence_index)
         observations = list(state.get("observations") or [])
         seen_ids = {str(item) for item in (state.get("seen_claim_ids") or [])}
+        invalid_cap = limits["max_consecutive_invalid"]
+        synthesis = bool(evidence_rows) and (
+            bool(checkpoint.get("synthesis_requested"))
+            or (invalid_cap > 1 and invalid_streak == invalid_cap - 1)
+        )
+        mode = "synthesis" if synthesis else "research"
+        if synthesis:
+            cited = {ref for candidate in state["candidates"].values() for ref in candidate["evidence_ids"]}
+            evidence_rows = sorted(evidence_rows, key=lambda row: row["id"] not in cited)
+            evidence_selection = {"offset": 0}
         previews = evidence_context(evidence_rows, seen_ids, evidence_selection)
         new_ids = [row["id"] for row in previews if row["id"] not in seen_ids]
         if not (checkpoint.get("pending_decision") or {}).get("iteration") == iteration:
@@ -468,7 +479,7 @@ async def run_decision_loop(
             iteration=iteration,
             max_iterations=iteration + 1,
             evidence=previews,
-            sources=context_sources(observations),
+            sources=[] if synthesis else context_sources(observations),
             contradictions=list(state["conflicts"]),
             open_questions=list(state["open_questions"]),
             budget_left=left,
@@ -476,6 +487,11 @@ async def run_decision_loop(
             schema_detail="full" if iteration == 0 else "compact",
             new_evidence_ids=new_ids,
         )
+        context["decision_mode"] = mode
+        if synthesis:
+            context["allowed_actions"] = list(SYNTHESIS_ACTIONS)
+            context["allowlisted_tools"] = []
+            context["tool_schema"] = {}
         context["coverage"] = evidence_coverage(evidence_rows, state["candidates"])
         context["candidates"] = [
             {key: value for key, value in candidate.items() if key not in {"risks", "data_scope"}}
@@ -499,7 +515,7 @@ async def run_decision_loop(
             context["rejected_proposals"] = checkpoint["candidate_feedback"]
         action: AgentAction | None = None
         pending = checkpoint.get("pending_decision") or {}
-        if pending.get("iteration") == iteration and pending.get("raw"):
+        if pending.get("iteration") == iteration and pending.get("mode", "research") == mode and pending.get("raw"):
             action = parse_model_decision(str(pending.get("raw")))
         if action is None:
             try:
@@ -507,7 +523,7 @@ async def run_decision_loop(
                     guarded_model_call,
                     db,
                     run.id,
-                    "decide",
+                    "synthesize" if synthesis else "decide",
                     lambda: _ask_model(executor.llm, context),
                     provider_id=str(getattr(executor.llm, "id", "llm")),
                 )
@@ -525,17 +541,22 @@ async def run_decision_loop(
             if getattr(executor.llm, "id", "") != "stub_llm":
                 _remember_model_status(db, "Verified")
             action, note = explain_decision(raw)
+            if synthesis and action is not None and action.action not in SYNTHESIS_ACTIONS:
+                action = None
+                note = "مهلت جمع‌بندی است. conclude یا ask_user را بر اساس شواهد انتخاب کنید."
             if action is None:
                 invalid_streak += 1
+                checkpoint.pop("synthesis_requested", None)
                 checkpoint["phase_feedback"] = note
                 await emit(
                     db, run, phase="search", status="running", message_fa=note,
                     payload={"event_type": "research.decision_invalid", "iteration": iteration,
+                             "decision_mode": mode,
                              "visible_evidence_ids": [row["id"] for row in previews]},
                     event_id=f"evt_{run.id}_invalid_{iteration}",
                 )
             if action:
-                checkpoint["pending_decision"] = {"iteration": iteration, "raw": raw}
+                checkpoint["pending_decision"] = {"iteration": iteration, "raw": raw, "mode": mode}
                 _remember_safety()
                 if not persist():
                     return _lease_lost(state, run)
@@ -555,6 +576,7 @@ async def run_decision_loop(
                 "iteration": iteration,
                 "action": action.action,
                 "tool": action.tool,
+                "decision_mode": mode,
                 "decision_source": "llm",
                 "visible_evidence_ids": [row["id"] for row in previews],
                 "new_evidence_ids": new_ids,
@@ -598,6 +620,11 @@ async def run_decision_loop(
 
         args = {key: value for key, value in action.args.items() if key != "resolved_questions"}
         tool = action.tool
+        source_id = args.get("source_id") if tool == "fetch_source" else None
+        if source_id:
+            source = next((row for row in observations if row.get("id") == source_id), None)
+            if source:
+                tool, args = "fetch_page", {"url": source["url"]}
         if tool in {"fetch_page", "extract_claims"}:
             tool = "fetch_page"
             target_url = str(args.get("url") or "")
@@ -616,7 +643,7 @@ async def run_decision_loop(
             if not feedback and unread_nudges < 1:
                 feedback = unread_sources_block_conclude(state["observations"], len(evidence_rows)) or ""
                 unread_nudges += int(bool(feedback))
-            if not feedback and candidate_feedback and not state["candidates"] and not previous_outcome:
+            if not synthesis and not feedback and candidate_feedback and not state["candidates"] and not previous_outcome:
                 feedback = "Market proposals were rejected. Review the rejection details and cite destination-specific claims."
             if not feedback:
                 action.stop_reason = action.stop_reason or (
@@ -639,6 +666,9 @@ async def run_decision_loop(
             gate = buyer_research_blocked(tool, run.selected_country)
             if gate:
                 feedback, error_code = gate, "BUYER_RESEARCH_BLOCKED"
+            elif tool == "fetch_source":
+                feedback = "شناسهٔ منبع یافت نشد. یک source_id از فهرست CONTEXT.sources انتخاب کنید."
+                error_code = "UNKNOWN_SOURCE_ID"
             elif prior:
                 feedback = f"{ALREADY_PROCESSED_FEEDBACK} {prior['url']}: {prior['status']}."
                 error_code = "SOURCE_ALREADY_PROCESSED"
@@ -718,7 +748,13 @@ async def run_decision_loop(
             "SOURCE_ALREADY_PROCESSED", "BUYER_RESEARCH_BLOCKED", "STRATEGY_NEEDS_ACTION",
         }
         invalid_streak = invalid_streak + 1 if ignored_failure and no_progress > repeated_cap > 0 else 0
+        checkpoint.pop("synthesis_requested", None)
         if not final_action and not advanced:
+            if not synthesis and evidence_rows and (
+                (error_code and 0 < repeated_cap <= no_progress)
+                or (tool == "search_web" and 0 < limits["max_fruitless_searches"] <= fruitless)
+            ):
+                checkpoint["synthesis_requested"] = True
             if tool == "search_web" and 0 < limits["max_fruitless_searches"] <= fruitless and not (actionable or evidence_rows):
                 final_action = blocked_action("NO_NEW_SOURCES", feedback)
             elif repeated_cap > 0 and no_progress > repeated_cap and not (actionable or evidence_rows):
@@ -733,6 +769,8 @@ async def run_decision_loop(
         state["action_outcomes"][signature] = outcome
         outcome_detail = {"action": action.action, "tool": tool, "query": str(args.get("query") or "")[:180],
                           "url": str(args.get("url") or "")[:2048], **outcome}
+        if source_id:
+            outcome_detail["source_id"] = source_id
         state["recent_actions"].append(outcome_detail)
         state["recent_actions"] = state["recent_actions"][-4:]
         state["tool_trace"].append({"tool": tool, "ok": not error_code, "message_fa": feedback, "error_code": error_code})
@@ -831,7 +869,7 @@ def _store_claims(db, run, state, url: str, claims: list) -> int:
     if not url:
         return 0
     seen = {
-        " ".join(row["statement"].split()).casefold()
+        canonical_claim_text(row["statement"])
         for row in evidence_index_for_run(db, run.id).values()
         if row and normalize_url(row.get("source_url") or "") == url
     }
@@ -844,7 +882,7 @@ def _store_claims(db, run, state, url: str, claims: list) -> int:
         if not isinstance(claim, dict):
             continue
         statement = " ".join(str(claim.get("statement") or "").split())[:2000]
-        key = statement.casefold()
+        key = canonical_claim_text(statement)
         if not key or key in seen:
             continue
         hs_scope = str(claim.get("hs_scope") or "")

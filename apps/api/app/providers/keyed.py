@@ -213,14 +213,14 @@ class KeyedGeminiLLM:
             return None
 
     def decide_research_action(self, context: dict) -> str:
-        from app.agents.decision_schema import AGENT_ACTION_JSON_SCHEMA
+        from app.agents.decision_schema import decision_json_schema
         from app.agents.llm_decide import render_decision_prompt
 
         prompt = render_decision_prompt(context)
         self.output_method = "json_schema"
         try:
             with httpx.Client(timeout=self.timeout) as client:
-                response = self._post(client, prompt, 4096, schema=AGENT_ACTION_JSON_SCHEMA)
+                response = self._post(client, prompt, 4096, schema=decision_json_schema(context))
                 if response.status_code in {400, 404, 422}:
                     self.output_method = "prompt"
                     response = self._post(client, prompt, 4096, schema=None)
@@ -316,7 +316,7 @@ class KeyedOpenAICompatLLM:
             return None
 
     def decide_research_action(self, context: dict) -> str:
-        from app.agents.decision_schema import AGENT_ACTION_JSON_SCHEMA
+        from app.agents.decision_schema import decision_json_schema
         from app.agents.llm_decide import render_decision_prompt
         from app.providers.response_norm import extract_json_value, parse_chat_completion
         from app.providers.structured_request import next_method, parameter_rejected, request_body, select_output_method
@@ -332,7 +332,7 @@ class KeyedOpenAICompatLLM:
                 model=self.model,
                 prompt=prompt,
                 method=method,
-                schema=AGENT_ACTION_JSON_SCHEMA,
+                schema=decision_json_schema(context),
                 schema_name="nova_decision",
                 max_tokens=tokens,
                 router_controls=False,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse
 
@@ -357,7 +358,12 @@ def evidence_context(rows: list[dict], seen: set[str], selection: dict) -> list[
             if row.get(key)
         }
         if selection or row["id"] not in seen:
-            item["statement"] = str(row["statement"])[:500 if selection else STATEMENT_CHARS]
+            statement = str(row["statement"])
+            if trade := row.get("trade"):
+                item["trade"] = trade
+                if not selection:
+                    statement = re.sub(r"\s+\(https?://[^\s()]+\)", "", statement)
+            item["statement"] = statement[:500 if selection else STATEMENT_CHARS]
         if selection:
             item["source_url"] = row.get("source_url")
         compact.append(item)

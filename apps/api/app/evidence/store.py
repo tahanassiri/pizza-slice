@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import Claim, EvidenceSource
 from app.schemas.contracts import Source
+from app.tools.extract import trade_fields
 
 
 def stable_id(prefix: str, *parts: object) -> str:
@@ -157,6 +158,8 @@ def evidence_index_for_run(db: Session, run_id: str) -> dict[str, dict]:
             "data_scope": "qualitative",
             "data_kind": row.data_kind,
         }
+        if trade := trade_fields(row.statement):
+            claim["trade"] = trade
         index[row.id] = claim
         # An older source reference can only resolve when it identifies one claim.
         if evidence_id not in index:

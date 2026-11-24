@@ -392,12 +392,12 @@ class OpenAICompatLLM:
         )
 
     def decide_research_action(self, context: dict) -> str:
-        from app.agents.decision_schema import AGENT_ACTION_JSON_SCHEMA
+        from app.agents.decision_schema import decision_json_schema
         from app.agents.llm_decide import render_decision_prompt
 
         result = self.complete_structured(
             render_decision_prompt(context),
-            AGENT_ACTION_JSON_SCHEMA,
+            decision_json_schema(context),
             schema_name="nova_decision",
             purpose="decide",
         )
@@ -418,7 +418,7 @@ class OpenAICompatLLM:
         basic_prompt = 'Return only {"ok": true}.'
         decision_prompt = (
             "Return one conclude action for a capability check. "
-            "tool is null, args_json is {}, rationale_fa is a short Persian sentence, "
+            "tool and source_id are null, args_json is the string {}, rationale_fa is a short Persian sentence, "
             "stop_reason is sufficient, market_proposals is [], unknowns is [], conflicts is []. "
             "Do not call tools and do not invent evidence."
         )

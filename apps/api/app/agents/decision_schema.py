@@ -28,6 +28,7 @@ AGENT_ACTION_JSON_SCHEMA: dict[str, Any] = {
             "enum": ["call_tool", "conclude", "ask_user", "change_strategy", "verify_conflict"],
         },
         "tool": _NULLABLE_STRING,
+        "source_id": _NULLABLE_STRING,
         "args_json": {"type": "string"},
         "rationale_fa": {"type": "string"},
         "stop_reason": _NULLABLE_STRING,
@@ -67,6 +68,7 @@ AGENT_ACTION_JSON_SCHEMA: dict[str, Any] = {
     "required": [
         "action",
         "tool",
+        "source_id",
         "args_json",
         "rationale_fa",
         "stop_reason",
@@ -79,10 +81,26 @@ AGENT_ACTION_JSON_SCHEMA: dict[str, Any] = {
 _REQUIRED_TOOL_ARGS = {
     "search_web": ("query",),
     "fetch_page": ("url",),
+    "fetch_source": ("source_id",),
     "extract_claims": ("url",),
     "verify_company": ("company_name", "country"),
     "classify_product": ("product",),
 }
+
+SYNTHESIS_ACTIONS = ("conclude", "ask_user")
+
+
+def decision_json_schema(context: dict[str, Any]) -> dict[str, Any]:
+    if context.get("decision_mode") != "synthesis":
+        return AGENT_ACTION_JSON_SCHEMA
+    properties = AGENT_ACTION_JSON_SCHEMA["properties"]
+    return {
+        **AGENT_ACTION_JSON_SCHEMA,
+        "properties": {
+            **properties,
+            "action": {**properties["action"], "enum": list(SYNTHESIS_ACTIONS)},
+        },
+    }
 
 
 def prepare_decision_payload(data: dict[str, Any]) -> dict[str, Any]:
@@ -96,6 +114,8 @@ def prepare_decision_payload(data: dict[str, Any]) -> dict[str, Any]:
     elif not isinstance(payload.get("args"), dict):
         payload["args"] = {}
     payload.pop("args_json", None)
+    if payload.get("tool") == "fetch_source" and payload.get("source_id") is not None:
+        payload["args"] = {**payload["args"], "source_id": payload["source_id"]}
     return payload
 
 
@@ -118,7 +138,10 @@ def validate_decision(data: Any) -> tuple[AgentAction | None, str]:
     if action.action == "call_tool":
         if not action.tool or action.tool not in ALLOWED_TOOLS:
             return None, "ابزار تصمیم در فهرست مجاز نیست."
-        missing = [key for key in _REQUIRED_TOOL_ARGS.get(action.tool, ()) if key not in action.args]
+        missing = [
+            key for key in _REQUIRED_TOOL_ARGS.get(action.tool, ())
+            if not isinstance(action.args.get(key), str) or not action.args[key].strip()
+        ]
         if missing:
             return None, "آرگومان ابزار کم است: " + ", ".join(missing) + "."
         if action.tool not in TOOL_ARG_SCHEMA and action.tool not in ALLOWED_TOOLS:

@@ -136,7 +136,7 @@ def extract_claims(
     ordered = sorted(table_claims, key=lambda claim: _table_rank(claim, hs_code)) + prose
     limit = max(max_claims, 12) if table_claims else max_claims
     for claim in ordered:
-        key = str(claim.get("statement") or "").casefold()
+        key = canonical_claim_text(str(claim.get("statement") or ""))
         if not key or key in seen:
             continue
         seen.add(key)
@@ -177,10 +177,55 @@ def _cell_text(raw: str) -> str:
     return text[:240]
 
 
+def canonical_claim_text(statement: str) -> str:
+    return " ".join(html.unescape(statement).split()).casefold()
+
+
+def trade_fields(statement: str) -> dict:
+    """Project exact fields out of the persisted source row, including existing rows."""
+    fields = {}
+    for part in statement.split("; "):
+        label, separator, value = part.partition(": ")
+        if separator:
+            fields[" ".join(label.casefold().split())] = value.strip()
+    flow = (fields.get("tradeflow") or fields.get("trade flow") or "").casefold()
+    if flow not in {"import", "imports", "export", "exports"}:
+        return {}
+    trade = {"flow": flow.rstrip("s")}
+    reporter = country_code(fields.get("reporter", ""))
+    partner = fields.get("partner", "")
+    partner_code = "WLD" if partner.casefold() in {"world", "wld", "all"} else country_code(partner)
+    if reporter:
+        trade["reporter"] = reporter
+    if partner_code:
+        trade["partner"] = partner_code
+    year = fields.get("year", "")
+    if re.fullmatch(r"(?:19|20)[0-9]{2}", year):
+        trade["year"] = year
+    for label, unit in (
+        ("trade value 1000usd", "USD thousands"),
+        ("trade value (us$ thousand)", "USD thousands"),
+        ("trade value (usd)", "USD"),
+        ("trade value", fields.get("trade value unit")),
+    ):
+        if value := _table_number(fields.get(label, "")):
+            trade["trade_value"] = {"value": value, "unit": unit}
+            break
+    if quantity := _table_number(fields.get("quantity", "")):
+        trade["quantity"] = {"value": quantity, "unit": fields.get("quantity unit")}
+    return trade
+
+
+def _table_number(value: str) -> str | None:
+    if re.fullmatch(r"-?(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?", value):
+        return value.replace(",", "")
+    return None
+
+
 def _sentence_claims(
     sanitized: str, *, url: str, product: str, max_claims: int, terms: list[str], origin: str | None
 ) -> list[dict]:
-    prose = " ".join(_TAG.sub(" ", sanitized).split())
+    prose = " ".join(_INJECTION.sub("[untrusted-text]", html.unescape(_TAG.sub(" ", sanitized))).split())
     sentences = re.split(r"(?<=[.!?۔؟])\s+", prose)
     claims: list[dict] = []
     for sentence in sentences:
