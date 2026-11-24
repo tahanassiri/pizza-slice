@@ -95,6 +95,10 @@ def candidates_from_search_hits(results: list[dict], *, country: str, product: s
     return found
 
 
+class BuyerSearchUnavailable(RuntimeError):
+    pass
+
+
 def collect_buyer_hits(executor: ToolExecutor | None, *, product: str, country_code: str) -> tuple[list, list]:
     """Role queries are a fixed tool checklist, not a model decision."""
 
@@ -102,6 +106,8 @@ def collect_buyer_hits(executor: ToolExecutor | None, *, product: str, country_c
         return [], []
     buyers = []
     sources = []
+    errors = []
+    searched = False
     for role, template in ROLE_QUERIES:
         result = executor.execute(
             ToolCall(
@@ -113,11 +119,17 @@ def collect_buyer_hits(executor: ToolExecutor | None, *, product: str, country_c
                 },
             )
         )
+        if not result.ok:
+            errors.append(result.error_code or "PROVIDER_UNAVAILABLE")
+            continue
+        searched = True
         hits = (result.data or {}).get("results") or []
         parsed = candidates_from_search_hits(hits, country=country_code, product=product, role=role)
         buyers.extend(parsed)
         for buyer in parsed:
             sources.extend(buyer.sources)
+    if errors and not searched:
+        raise BuyerSearchUnavailable(", ".join(dict.fromkeys(errors)))
     return buyers, sources
 
 
@@ -139,6 +151,8 @@ def discover_and_verify_buyers(
         raw_buyers, sources = collect_buyer_hits(
             executor, product=product, country_code=country_code
         )
+    except BuyerSearchUnavailable as exc:
+        return [], [], "failed", "PROVIDER_UNAVAILABLE", f"دسترسی به جست‌وجوی خریدار ممکن نشد ({exc})."
     except Exception as exc:
         return (
             [],

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.tools.extract import country_code
+
 MARKET_TOOLS = frozenset({"search_web", "fetch_page"})
 BUYER_TOOLS = frozenset({"verify_company"})
 
@@ -31,6 +33,30 @@ ALREADY_PROCESSED_FEEDBACK = (
     "این منبع قبلاً بررسی شده است. استخراج دوباره انجام نشد. "
     "یک منبع نخوانده را انتخاب کنید یا change_strategy را صدا بزنید."
 )
+
+
+def shortlist_evidence(rows: list[dict], candidates: dict, origin: str, hs6: str | None) -> set[str]:
+    """Find evidence for a comparison without choosing or ranking markets."""
+    origin_code = country_code(origin)
+    by_country = {
+        code: {ref for item in candidate.get("criteria", []) if item["criterion"] == "demand"
+               for ref in item["evidence_ids"]}
+        for code, candidate in candidates.items()
+    }
+    for row in rows:
+        trade = row.get("trade") or {}
+        destination = row.get("country")
+        if not (destination and destination != origin_code and hs6 and row.get("hs_scope") == hs6 and trade.get("year")):
+            continue
+        if not (trade.get("trade_value") or trade.get("quantity")):
+            continue
+        if (trade.get("flow") == "import" and trade.get("reporter") == destination) or (
+            origin_code and trade.get("flow") == "export"
+            and trade.get("reporter") == origin_code and trade.get("partner") == destination
+        ):
+            by_country.setdefault(destination, set()).add(row["id"])
+    supported = [refs for refs in by_country.values() if refs]
+    return set().union(*supported) if len(supported) >= 2 else set()
 
 
 def market_discovery_attempted(tools_invoked: list[str], tool_trace: list[dict] | None = None) -> bool:

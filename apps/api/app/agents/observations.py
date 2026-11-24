@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from decimal import Decimal
 from urllib.parse import urlparse, urlunparse
 
 from sqlalchemy import select
@@ -31,6 +32,9 @@ def normalize_url(url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     path = parsed.path.rstrip("/") or "/"
+    if parsed.hostname == "wits.worldbank.org":
+        # WITS serves the same world table for both reporter spellings.
+        path = re.sub(r"^(/trade/comtrade/en/country/)all(?=/year/)", r"\g<1>All", path, flags=re.IGNORECASE)
     return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, "", parsed.query, ""))
 
 
@@ -91,7 +95,7 @@ def absorb_search_results(
     """Store each new URL once. Returns counts; does not create claims."""
 
     observations = list(state.get("observations") or [])
-    known = {str(item.get("url_key") or ""): item for item in observations}
+    known = {normalize_url(str(item.get("url_key") or item.get("url") or "")): item for item in observations}
     added: list[dict] = []
     thin = 0
     total = 0
@@ -200,7 +204,7 @@ def mark_pages(
             "rejected": 3, "extraction_failed": 3, "extracted": 4}
     snippet = " ".join((excerpt or "").split())[:SNIPPET_CHARS]
     for row in state.get("observations") or []:
-        if row.get("url_key") not in keys and row.get("url") not in keys:
+        if normalize_url(str(row.get("url_key") or row.get("url") or "")) not in keys:
             continue
         current = str(row.get("status") or "unread")
         if rank.get(status, 0) >= rank.get(current, 0):
@@ -370,16 +374,32 @@ def evidence_context(rows: list[dict], seen: set[str], selection: dict) -> list[
     return compact
 
 
+def trade_claim_key(row: dict) -> tuple | None:
+    trade = row.get("trade") or {}
+    dimensions = (row.get("hs_scope"), *(trade.get(key) for key in ("reporter", "partner", "flow", "year")))
+    measurements = tuple(
+        (Decimal(item["value"]), item["unit"].casefold()) if item.get("value") and item.get("unit") else None
+        for item in (trade.get("trade_value") or {}, trade.get("quantity") or {})
+    )
+    return (*dimensions, *measurements) if all(dimensions) and any(measurements) else None
+
+
 def evidence_coverage(rows: list[dict], candidates: dict) -> dict:
     coverage: dict = {}
+    identities = {row["id"]: trade_claim_key(row) or row["id"] for row in rows}
+    seen = set()
     for row in rows:
         country = row.get("country") or "unmapped"
+        key = (country, identities[row["id"]])
+        if key in seen:
+            continue
+        seen.add(key)
         bucket = coverage.setdefault(country, {"claim_count": 0, "criteria": {}})
         bucket["claim_count"] += 1
     for country, proposal in candidates.items():
         bucket = coverage.setdefault(country, {"claim_count": 0, "criteria": {}})
         bucket["criteria"] = {
-            item["criterion"]: len(item["evidence_ids"])
+            item["criterion"]: len({identities.get(ref, ref) for ref in item["evidence_ids"]})
             for item in proposal.get("criteria") or []
         }
     return coverage

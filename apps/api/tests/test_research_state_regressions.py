@@ -3,7 +3,7 @@ import asyncio
 from app.agents.decision_loop import _store_claims, run_decision_loop
 from app.agents.decision_schema import validate_decision
 from app.agents.market_scorer import validate_market_proposal
-from app.agents.observations import compact_evidence, evidence_context, load_observations, page_read_status
+from app.agents.observations import compact_evidence, evidence_context, load_observations, normalize_url, page_read_status
 from app.agents.tool_contracts import ToolResult
 from app.db.session import SessionLocal
 from app.evidence.store import evidence_index_for_run, record_claim
@@ -82,6 +82,77 @@ def test_world_exports_alone_do_not_support_a_destination_recommendation():
     )
     assert candidate is None
     assert reason == "no_destination_demand_or_purchase_evidence"
+
+
+def test_equivalent_wits_sources_and_trade_rows_count_once():
+    url = "https://wits.worldbank.org/trade/comtrade/en/country/All/year/2024/tradeflow/Imports/partner/WLD/product/090240"
+    assert normalize_url(url.replace("/All/", "/ALL/")) == normalize_url(url)
+    assert normalize_url("https://example.com/All") != normalize_url("https://example.com/ALL")
+    statement = (
+        "Reporter: Germany; TradeFlow: Import; ProductCode: 090240; "
+        "Product Description: Tea; Year: 2024; Partner: World; Trade Value 1000USD: 12.00"
+    )
+    with SessionLocal() as db:
+        run = Run(id="run_trade_rows_unique", product="tea", origin_country="India", guessed_hs_code="090240")
+        db.add(run)
+        db.commit()
+        assert _store_claims(db, run, {}, url, [{"statement": statement}]) == 1
+        alias = statement.replace("Germany", "Germany (https://example.com/Germany)").replace("12.00", "12")
+        assert _store_claims(db, run, {}, "https://example.com/trade", [{"statement": alias}]) == 0
+        bilateral = statement.replace("World", "India")
+        assert _store_claims(db, run, {}, "https://example.com/trade", [{"statement": bilateral}]) == 1
+
+
+def test_market_shortlist_triggers_model_synthesis_before_more_search(monkeypatch):
+    url = "https://example.com/tea-trade"
+    contexts = []
+    monkeypatch.setattr(admin_service, "read_safety", lambda _db: {})
+
+    class Model:
+        id = "openrouter"
+        research_cleared = True
+
+        def decide_research_action(self, context):
+            contexts.append(context)
+            if len(contexts) == 1:
+                return {"action": "call_tool", "tool": "fetch_page", "args": {"url": url}}
+            assert context["decision_mode"] == "synthesis"
+            assert context["synthesis_reason"] == "market_shortlist_ready"
+            assert context["allowlisted_tools"] == []
+            return {"action": "conclude", "market_proposals": [
+                {"country_code": row["country"], "recommendation": "watch", "evidence_ids": [row["id"]]}
+                for row in context["evidence"]
+            ]}
+
+    class Executor:
+        llm = Model()
+        budget = None
+
+        def execute(self, call):
+            if call.tool == "fetch_page":
+                return ToolResult(tool=call.tool, ok=True, message_fa="", data={"url": url})
+            if call.tool == "extract_claims":
+                claims = [{"statement": (
+                    f"Reporter: {country}; TradeFlow: Import; ProductCode: 090240; "
+                    "Product Description: Tea; Year: 2024; Partner: World; Trade Value 1000USD: 12.00"
+                )} for country in ("France", "Germany")]
+                return ToolResult(tool=call.tool, ok=True, message_fa="", data={"claims": claims})
+            assert call.tool == "save_evidence"
+            return ToolResult(tool=call.tool, ok=True, message_fa="")
+
+    async def emit(_db, _run, **_event):
+        pass
+
+    with SessionLocal() as db:
+        run = Run(id="run_initial_shortlist", product="tea", origin_country="India", status="running", guessed_hs_code="090240")
+        db.add(run)
+        db.commit()
+        result = asyncio.run(run_decision_loop(db, run, Executor(), emit, checkpoint={
+            "completed_steps": ["classify", "memory"],
+        }))
+    assert len(contexts) == 2
+    assert {market.country_code for market in result["markets"]} == {"FR", "DE"}
+    assert not result["provisional"]
 
 
 def test_reserved_decision_synthesizes_after_repeated_invalid_fetch(monkeypatch):

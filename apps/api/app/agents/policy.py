@@ -27,8 +27,6 @@ ALLOWED_TOOLS = frozenset(
         "calculate_economics",
         "verify_company",
         "classify_product",
-        # legacy optional — not required; returns honest unavailable if called
-        "get_trade_stats",
         "research_regulations",
         "research_logistics",
     }

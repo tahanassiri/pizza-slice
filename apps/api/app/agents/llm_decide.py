@@ -40,7 +40,6 @@ TOOL_ARG_SCHEMA: dict[str, dict[str, str]] = {
     "classify_product": {"product": "string", "hs_hint": "optional string"},
     "research_regulations": {"product": "string", "destination": "string", "origin": "string"},
     "research_logistics": {"product": "string", "destination": "string", "origin": "string"},
-    "get_trade_stats": {"note": "not a live integration; expect PROVIDER_UNAVAILABLE"},
     "calculate_economics": {"feasibility": "object"},
 }
 
@@ -107,6 +106,7 @@ Sector or total statistics are not product-specific demand.
 Market discovery does not need a selected destination and does not need prior memory.
 In research mode, use search_web to discover sources and fetch_source with a known source_id to read one.
 In synthesis mode, use only conclude or ask_user. Use the supplied evidence and candidates and identify remaining unknowns.
+When synthesis_reason is market_shortlist_ready, conclude with a short list supported by the supplied product and destination evidence. Historical world imports support qualitative demand, not access for the origin. Use watch or risky where appropriate and leave unverified criteria unknown. Choose ask_user only when the analysis needs an input before it can present any shortlist.
 CONTEXT.sources tracks unread, fetched, extracted, extraction_failed, irrelevant, inaccessible pages.
 A title or snippet is not verified evidence and must not be cited as a market source.
 CONTEXT.evidence contains extracted claims only. market_proposals.evidence_ids must be those ids.

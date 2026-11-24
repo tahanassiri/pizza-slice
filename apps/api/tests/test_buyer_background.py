@@ -3,6 +3,8 @@ import time
 from threading import Event
 
 from app.db.session import SessionLocal
+from app.agents.buyer_runner import discover_and_verify_buyers
+from app.agents.tool_contracts import ToolResult
 from app.models.entities import Run
 from app.services import runs
 
@@ -70,6 +72,26 @@ def test_buyer_search_has_durable_pending_and_result(client, monkeypatch):
         if snapshot["buyer_search"]["status"] == "partial":
             assert snapshot["buyer_search"]["error"]["code"] == "NO_BUYERS"
             assert snapshot["buyers"] == []
+            report = client.get(f"{run_path}/report").json()
+            assert report["selected_country"] == "DE"
+            assert "خریدار قابل استنادی" in report["summary_fa"]
+            outcomes = [item["payload"] for item in snapshot["events"]
+                        if (item.get("payload") or {}).get("event_type") == "buyers.job_finished"]
+            assert len(outcomes) == 1 and outcomes[0]["error_code"] == "NO_BUYERS"
             return
         time.sleep(0.025)
     raise AssertionError("Buyer search did not persist its terminal state")
+
+
+def test_buyer_search_distinguishes_unavailable_provider_from_no_candidates():
+    class UnavailableSearch:
+        def execute(self, call):
+            return ToolResult(tool=call.tool, ok=False, message_fa="جست‌وجو مسدود شد.", error_code="WEB_SEARCH_BLOCKED")
+
+    with SessionLocal() as db:
+        buyers, _, status, code, message = discover_and_verify_buyers(
+            db, run_id="unused", product="tea", country_code="DE", search_provider=None, executor=UnavailableSearch(),
+        )
+    assert buyers == []
+    assert status == "failed" and code == "PROVIDER_UNAVAILABLE"
+    assert "WEB_SEARCH_BLOCKED" in message

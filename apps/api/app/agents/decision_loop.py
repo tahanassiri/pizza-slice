@@ -43,12 +43,14 @@ from app.agents.observations import (
     processed_source,
     research_counts,
     search_progress_fa,
+    trade_claim_key,
 )
 from app.agents.research_phase import (
     ALREADY_PROCESSED_FEEDBACK,
     FRUITLESS_SEARCH_FEEDBACK,
     buyer_research_blocked,
     premature_market_stop,
+    shortlist_evidence,
     unread_sources_block_conclude,
 )
 from app.agents.market_scorer import score_from_evidence_markets, validate_market_proposal
@@ -60,7 +62,7 @@ from app.schemas.contracts import Market, Source
 from app.providers.keyed import ModelCallError
 from app.tools.budget import BudgetExceeded, ensure_run_budget, guarded_model_call
 from app.tools.executor import ToolExecutor
-from app.tools.extract import canonical_claim_text, country_code, country_mentions
+from app.tools.extract import canonical_claim_text, country_code, country_mentions, trade_fields
 
 _MODEL_CODE = {
     "Billing problem": "MODEL_BILLING",
@@ -458,16 +460,17 @@ async def run_decision_loop(
         observations = list(state.get("observations") or [])
         seen_ids = {str(item) for item in (state.get("seen_claim_ids") or [])}
         invalid_cap = limits["max_consecutive_invalid"]
+        shortlist = shortlist_evidence(evidence_rows, state["candidates"], run.origin_country, run.guessed_hs_code)
         synthesis = bool(evidence_rows) and (
-            bool(checkpoint.get("synthesis_requested"))
+            bool(shortlist or checkpoint.get("synthesis_requested"))
             or (invalid_cap > 1 and invalid_streak == invalid_cap - 1)
         )
         mode = "synthesis" if synthesis else "research"
         if synthesis:
             cited = {ref for candidate in state["candidates"].values() for ref in candidate["evidence_ids"]}
-            evidence_rows = sorted(evidence_rows, key=lambda row: row["id"] not in cited)
-            evidence_selection = {"offset": 0}
-        previews = evidence_context(evidence_rows, seen_ids, evidence_selection)
+            evidence_rows = sorted(evidence_rows, key=lambda row: (row["id"] not in shortlist, row["id"] not in cited))
+            evidence_selection = {}
+        previews = evidence_context(evidence_rows, set() if synthesis else seen_ids, evidence_selection)
         new_ids = [row["id"] for row in previews if row["id"] not in seen_ids]
         if not (checkpoint.get("pending_decision") or {}).get("iteration") == iteration:
             state["seen_claim_ids"] += new_ids
@@ -489,6 +492,7 @@ async def run_decision_loop(
         )
         context["decision_mode"] = mode
         if synthesis:
+            context["synthesis_reason"] = "market_shortlist_ready" if shortlist else "recovery"
             context["allowed_actions"] = list(SYNTHESIS_ACTIONS)
             context["allowlisted_tools"] = []
             context["tool_schema"] = {}
@@ -577,6 +581,7 @@ async def run_decision_loop(
                 "action": action.action,
                 "tool": action.tool,
                 "decision_mode": mode,
+                **({"synthesis_reason": context["synthesis_reason"]} if synthesis else {}),
                 "decision_source": "llm",
                 "visible_evidence_ids": [row["id"] for row in previews],
                 "new_evidence_ids": new_ids,
@@ -868,11 +873,13 @@ def _store_claims(db, run, state, url: str, claims: list) -> int:
     url = normalize_url(url)
     if not url:
         return 0
+    rows = evidence_index_for_run(db, run.id).values()
     seen = {
         canonical_claim_text(row["statement"])
-        for row in evidence_index_for_run(db, run.id).values()
+        for row in rows
         if row and normalize_url(row.get("source_url") or "") == url
     }
+    seen_trade = {key for row in rows if (key := trade_claim_key(row)) is not None}
     source_id = next(
         (row["id"] for row in state.get("observations", []) if row.get("url_key") == url),
         None,
@@ -886,8 +893,14 @@ def _store_claims(db, run, state, url: str, claims: list) -> int:
         if not key or key in seen:
             continue
         hs_scope = str(claim.get("hs_scope") or "")
+        trade = trade_fields(statement)
+        if not hs_scope and trade:
+            hs_scope = run.guessed_hs_code or ""
         if hs_scope not in hs_codes_in_text(statement) or hs_scope != run.guessed_hs_code:
             hs_scope = None
+        trade_key = trade_claim_key({"trade": trade, "hs_scope": hs_scope})
+        if trade_key is not None and trade_key in seen_trade:
+            continue
         country = country_code(str(claim.get("country") or ""))
         if not country:
             mentions = country_mentions(statement) - {country_code(run.origin_country)}
@@ -901,6 +914,8 @@ def _store_claims(db, run, state, url: str, claims: list) -> int:
             product_scope=run.product, period=period, confidence="unknown", evidence_id=source_id,
         )
         seen.add(key)
+        if trade_key is not None:
+            seen_trade.add(trade_key)
         stored += 1
     return stored
 
@@ -1021,7 +1036,7 @@ async def _finish(db, run, executor, emit, state, final_action, markets, memory_
         "LEASE_LOST",
     }
     provisional = bool(markets and final_action.action != "conclude")
-    status = "partial" if blocked or provisional or not recommended else "completed"
+    status = "partial" if blocked or provisional or not markets else "completed"
     message = final_action.rationale_fa
     if markets and not blocked:
         message = (

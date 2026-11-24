@@ -174,18 +174,6 @@ class ToolExecutor:
             )
         if tool == "cross_check":
             return cross_check_claims(list(args.get("claims") or []))
-        if tool == "get_trade_stats":
-            # Not a mandatory integration — honest unavailable; agent should use web discovery
-            return ToolResult(
-                tool="get_trade_stats",
-                ok=False,
-                message_fa=(
-                    "آمار تجارت سخت‌کدشده (WITS/Comtrade) از مسیر ایجنت حذف شده است. "
-                    "از جست‌وجوی وب و منابع عمومی کشف‌شده استفاده کنید."
-                ),
-                error_code="PROVIDER_UNAVAILABLE",
-                data={"hint": "use search_web + fetch_page"},
-            )
         if tool == "read_memory":
             item, status = self.memory.lookup_public(
                 kind=str(args.get("kind") or "analysis"),

@@ -116,6 +116,10 @@ def snapshot(db: Session, run_id: str) -> RunSnapshot:
             report.selected_country = buyer_row.country_code
             report.buyers = buyers
             report.sources = list(sources.values())
+            if buyer_row.status not in _active_buyer_statuses:
+                report.summary_fa = report.summary_fa.removesuffix(" انتخاب کشور برای مرحله خریداران الزامی است.")
+                buyer_summary = buyer_row.error_message_fa or f"{len(buyers)} نامزد خریدار بررسی شد."
+                report.summary_fa += f" نتیجهٔ جست‌وجوی خریدار در {buyer_row.country_code}. {buyer_summary}"
     return RunSnapshot(
         run=run_to_out(run),
         last_event_id=events[-1].event_id if events else None,
@@ -195,11 +199,15 @@ def start_buyer_search(db: Session, run_id: str, country_code: str) -> RunSnapsh
 
 
 def _run_buyer_search(run_id: str, job_id: str) -> None:
+    import asyncio
+    from time import monotonic
+
     from app.agents.buyer_runner import discover_and_verify_buyers
     from app.events.broadcaster import broadcaster
     from app.events.store import append_event
     from app.tools.executor import ToolExecutor
 
+    started_at = monotonic()
     with _buyer_lock, SessionLocal() as db:
         job = db.get(BuyerSearchRow, run_id)
         run = db.get(Run, run_id)
@@ -223,8 +231,6 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
             db.commit()
             if created:
                 try:
-                    import asyncio
-
                     asyncio.run(broadcaster.publish(run_id, evt.model_dump()))
                 except Exception:
                     pass
@@ -282,8 +288,6 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
                     db.commit()
                     if created:
                         try:
-                            import asyncio
-
                             asyncio.run(broadcaster.publish(run_id, evt.model_dump()))
                         except Exception:
                             pass
@@ -303,7 +307,7 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
         job.error_code = error_code
         job.error_message_fa = error_message
         run = db.get(Run, run_id)
-        if run and buyers:
+        if run:
             run.buyers_json = job.buyers_json
             if run.report_json:
                 report = Report.model_validate_json(run.report_json)
@@ -311,7 +315,21 @@ def _run_buyer_search(run_id: str, job_id: str) -> None:
                 report.buyers = buyers
                 run.report_json = report.model_dump_json()
             run.updated_at = job.updated_at
+        evt, created = append_event(
+            db,
+            run_id=run_id,
+            event_id=f"evt_{job_id}_finished",
+            phase="buyers",
+            status=status,
+            message_fa=error_message or f"بررسی {len(buyers)} نامزد خریدار پایان یافت.",
+            error_code=error_code,
+            payload={"event_type": "buyers.job_finished", "country_code": country_code,
+                     "status": status, "buyer_count": len(buyers), "error_code": error_code,
+                     "elapsed_seconds": round(monotonic() - started_at, 3)},
+        )
         db.commit()
+    if created:
+        asyncio.run(broadcaster.publish(run_id, evt.model_dump()))
 
 
 def mark_interrupted_runs(db: Session) -> list[str]:
