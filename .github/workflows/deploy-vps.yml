@@ -1,0 +1,113 @@
+# Manual production deploy. This file has no credentials.
+# GitHub shows "Run workflow" only after this file exists on the default branch.
+# The git_ref input chooses the branch or commit that is uploaded.
+# That can be a commit on an unmerged pull request. This workflow does not merge it.
+name: Deploy VPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: Branch, tag, or full commit SHA to deploy
+        required: true
+        default: 264ae00dbe18130ecd8f4ff4baa26bf0f1316bf5
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-vps-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy selected ref
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    steps:
+      - name: Check out the selected ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve and validate the commit
+        id: commit
+        env:
+          GIT_REF: ${{ inputs.git_ref }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "resolved commit is not a full SHA" >&2
+            exit 1
+          fi
+          if [[ "$GIT_REF" =~ ^[0-9a-fA-F]{40}$ && "$sha" != "${GIT_REF,,}" ]]; then
+            echo "checkout does not match the requested commit" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Deploying $sha"
+
+      - name: Require deploy secrets
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_KNOWN_HOSTS"
+          [[ "$VPS_USER" =~ ^[a-z][a-z0-9-]{0,31}$ ]]
+          [[ "$VPS_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+
+      - name: Upload the tree and rebuild
+        env:
+          SHA: ${{ steps.commit.outputs.sha }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]]
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/nova_deploy
+          chmod 600 ~/.ssh/nova_deploy
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh_opts=(
+            -i "$HOME/.ssh/nova_deploy"
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/known_hosts"
+            -o ServerAliveInterval=30
+            -p "$port"
+          )
+          rsync -az --delete --safe-links \
+            --exclude '.git/' \
+            --exclude 'node_modules/' \
+            --exclude 'apps/web/node_modules/' \
+            --exclude 'apps/web/.next/' \
+            --exclude '__pycache__/' \
+            --exclude '.env' \
+            --exclude '.env.*' \
+            --exclude '*.pem' \
+            --exclude 'nova-deploy-key' \
+            --exclude 'nova-deploy-key.pub' \
+            -e "ssh ${ssh_opts[*]}" \
+            ./ "${VPS_USER}@${VPS_HOST}:/home/nova-deploy/staging/"
+          ssh "${ssh_opts[@]}" "${VPS_USER}@${VPS_HOST}" \
+            sudo /usr/local/sbin/nova-deploy "$SHA"
+          curl -fsS --retry 6 --retry-delay 5 --max-time 20 \
+            https://magical.net44.ir/health \
+            | grep -q '"status":"ok"'
+          echo "Verified health for $SHA"
