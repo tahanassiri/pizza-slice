@@ -16,6 +16,17 @@ BUYER_GATE_FEEDBACK = (
     "کشف بازار را با search_web ادامه دهید."
 )
 
+FRUITLESS_SEARCH_FEEDBACK = (
+    "جست‌وجوهای اخیر منبع تازه و قابل بررسی اضافه نکردند. "
+    "پرس‌وجو را با کلمات دیگر تکرار نکنید. "
+    "یک منبع نخوانده را با fetch_page بخوانید یا راهبرد را عوض کنید."
+)
+
+UNREAD_SOURCE_FEEDBACK = (
+    "منابع کشف‌شده هنوز خوانده نشده‌اند و ادعای استخراج‌شده‌ای در CONTEXT.evidence نیست. "
+    "نتیجه جست‌وجو شاهد تأییدشده نیست. یک نشانی را با fetch_page انتخاب کنید."
+)
+
 
 def market_discovery_attempted(tools_invoked: list[str], tool_trace: list[dict] | None = None) -> bool:
     if any(tool in MARKET_TOOLS for tool in tools_invoked):
@@ -32,6 +43,14 @@ def premature_market_stop(action: str, tools_invoked: list[str], tool_trace: lis
     if market_discovery_attempted(tools_invoked, tool_trace):
         return None
     return MARKET_DISCOVERY_FEEDBACK
+
+
+def unread_sources_block_conclude(observations: list[dict] | None, evidence_count: int) -> str | None:
+    if evidence_count:
+        return None
+    if not any(row.get("status") == "unread" for row in observations or []):
+        return None
+    return UNREAD_SOURCE_FEEDBACK
 
 
 def buyer_research_blocked(tool: str | None, selected_country: str | None) -> str | None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 DEFAULT_SAFETY = {
     "max_consecutive_invalid": 3,
     "max_repeated_actions": 3,
+    "max_fruitless_searches": 3,
     "max_runtime_seconds": 1800,
     "max_run_tokens": 200_000,
 }

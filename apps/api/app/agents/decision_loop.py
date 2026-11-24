@@ -19,7 +19,23 @@ from app.agents.llm_decide import (
     pending_steps,
 )
 from app.agents.loop_safety import action_signature, operational_stop
-from app.agents.research_phase import buyer_research_blocked, premature_market_stop
+from app.agents.observations import (
+    absorb_search_results,
+    compact_evidence,
+    context_sources,
+    load_observations,
+    mark_pages,
+    observation_sources,
+    page_progress_fa,
+    research_counts,
+    search_progress_fa,
+)
+from app.agents.research_phase import (
+    FRUITLESS_SEARCH_FEEDBACK,
+    buyer_research_blocked,
+    premature_market_stop,
+    unread_sources_block_conclude,
+)
 from app.agents.market_scorer import score_from_evidence_markets
 from app.agents.tool_contracts import ToolCall
 from app.evidence.store import evidence_index_for_run, record_claim
@@ -82,6 +98,21 @@ async def run_decision_loop(
     state.setdefault("tool_trace", [])
     state.setdefault("claims", [])
     state.setdefault("urls", [])
+    if "observations" not in (checkpoint.get("state") or {}):
+        loaded = load_observations(db, run.id)
+        if loaded:
+            state["observations"] = loaded
+        elif state.get("urls"):
+            absorb_search_results(
+                state,
+                [{"url": url} for url in state["urls"]],
+                run_id=run.id,
+                db=db,
+            )
+        else:
+            state["observations"] = []
+    else:
+        state.setdefault("observations", [])
     state.setdefault("conflicts", [])
     state.setdefault("unknowns", [])
     state.setdefault(
@@ -94,6 +125,8 @@ async def run_decision_loop(
     )
     tools_invoked: list[str] = list(checkpoint.get("tools_invoked") or [])
     iteration = int(checkpoint.get("decision_iteration") or 0)
+    fruitless = int(checkpoint.get("fruitless_searches") or 0)
+    unread_nudges = int(checkpoint.get("unread_nudges") or 0)
 
     def persist() -> bool:
         checkpoint["version"] = 2
@@ -104,12 +137,15 @@ async def run_decision_loop(
         checkpoint["state"] = {
             "tool_trace": state["tool_trace"][-30:],
             "claims": state["claims"][-20:],
-            "urls": state["urls"][:20],
+            "urls": list(dict.fromkeys(state["urls"]))[:24],
+            "observations": list(state.get("observations") or [])[-24:],
             "conflicts": state["conflicts"][:12],
             "unknowns": state["unknowns"][:12],
             "open_questions": state["open_questions"][:8],
         }
         checkpoint["tools_invoked"] = tools_invoked[-40:]
+        checkpoint["fruitless_searches"] = fruitless
+        checkpoint["unread_nudges"] = unread_nudges
         return _touch(db, task_id, lease_owner, checkpoint)
 
     def remember(step: str) -> bool:
@@ -360,17 +396,20 @@ async def run_decision_loop(
         if not persist():
             return _lease_lost(state, run)
         left = _budget_left(executor)
+        evidence_rows = compact_evidence(evidence_index)
+        observations = list(state.get("observations") or [])
         context = build_decision_context(
             product=run.product,
             origin=run.origin_country,
             hs6=run.guessed_hs_code,
             iteration=iteration,
             max_iterations=iteration + 1,
-            evidence=list(evidence_index.values()),
-            sources=[{"url": url} for url in state["urls"][:12]],
+            evidence=evidence_rows,
+            sources=context_sources(observations),
             contradictions=list(state["conflicts"]),
             open_questions=list(state["open_questions"]),
             budget_left=left,
+            research_state=research_counts(observations, evidence_rows),
         )
         if checkpoint.get("phase_feedback"):
             context["_correction"] = str(checkpoint["phase_feedback"])
@@ -482,6 +521,16 @@ async def run_decision_loop(
                     break
                 iteration += 1
                 continue
+            unread_feedback = unread_sources_block_conclude(
+                state.get("observations"),
+                len(evidence_rows),
+            )
+            if unread_feedback and unread_nudges < 1:
+                unread_nudges += 1
+                checkpoint["phase_feedback"] = unread_feedback
+                checkpoint["unread_nudges"] = unread_nudges
+                iteration += 1
+                continue
             checkpoint["phase_feedback"] = ""
             final_action = action
             break
@@ -544,25 +593,88 @@ async def run_decision_loop(
                 "error_code": result.error_code,
             }
         )
-        for item in (result.data or {}).get("results") or []:
-            if item.get("url"):
-                state["urls"].append(item["url"])
         if action.tool == "fetch_page" and result.ok:
-            await _absorb_page(db, run, executor, emit, state, result, action)
+            stored = await _absorb_page(db, run, executor, emit, state, result, action)
             evidence_index = evidence_index_for_run(db, run.id)
+            if stored:
+                fruitless = 0
+                if checkpoint.get("phase_feedback") == FRUITLESS_SEARCH_FEEDBACK:
+                    checkpoint["phase_feedback"] = ""
+        elif action.tool == "extract_claims" and result.ok:
+            url = str((action.args or {}).get("url") or (result.data or {}).get("url") or "")
+            stored = _store_claims(
+                db,
+                run,
+                state,
+                url,
+                list((result.data or {}).get("claims") or []),
+            )
+            mark_pages(
+                state,
+                [url],
+                status="extracted" if stored else "fetched",
+                claim_count=stored,
+                excerpt=str((action.args or {}).get("text") or ""),
+                db=db,
+            )
+            evidence_index = evidence_index_for_run(db, run.id)
+            message_fa, event_type = page_progress_fa(stored)
+            await emit(
+                db,
+                run,
+                phase="trade_stats",
+                status="running",
+                message_fa=message_fa,
+                payload={"event_type": event_type, "url": url, "claim_count": stored},
+                event_id=f"evt_{run.id}_extract_{iteration}",
+            )
+            if stored:
+                fruitless = 0
+                if checkpoint.get("phase_feedback") == FRUITLESS_SEARCH_FEEDBACK:
+                    checkpoint["phase_feedback"] = ""
         elif action.tool == "search_web" and result.ok:
+            summary = absorb_search_results(
+                state,
+                list((result.data or {}).get("results") or []),
+                run_id=run.id,
+                db=db,
+            )
             await emit(
                 db,
                 run,
                 phase="search",
-                status="partial",
-                message_fa=result.message_fa,
+                status="running",
+                message_fa=search_progress_fa(
+                    summary["total"],
+                    summary["new_useful"],
+                    summary["thin"],
+                ),
                 payload={
-                    "event_type": "market.evidence_ready",
-                    "result_count": len((result.data or {}).get("results") or []),
+                    "event_type": "research.search_done",
+                    "result_count": summary["total"],
+                    "new_sources": summary["new_useful"],
+                    "thin_results": summary["thin"],
+                    "verified_claims": len(compact_evidence(evidence_index)),
                 },
+                source_refs=observation_sources(summary["added"])[:8],
                 event_id=f"evt_{run.id}_search_{iteration}",
             )
+            if summary["new_useful"]:
+                fruitless = 0
+                if checkpoint.get("phase_feedback") == FRUITLESS_SEARCH_FEEDBACK:
+                    checkpoint["phase_feedback"] = ""
+            else:
+                fruitless += 1
+                if fruitless >= 2:
+                    checkpoint["phase_feedback"] = FRUITLESS_SEARCH_FEEDBACK
+                fruitless_cap = safety.get("max_fruitless_searches")
+                fruitless_cap = 3 if fruitless_cap is None else int(fruitless_cap)
+                if fruitless_cap > 0 and fruitless >= fruitless_cap:
+                    final_action = blocked_action(
+                        "NO_NEW_SOURCES",
+                        FRUITLESS_SEARCH_FEEDBACK + " جست‌وجو بدون منبع تازه متوقف شد. شواهد موجود حفظ شد.",
+                    )
+                    break
         elif not result.ok:
             state["unknowns"].append(result.message_fa)
         iteration += 1
@@ -626,12 +738,39 @@ def _ask_model(llm: object, context: dict[str, Any]) -> str:
     return ""
 
 
-async def _absorb_page(db, run, executor, emit, state, result, action) -> None:
+def _store_claims(db, run, state, url: str, claims: list) -> int:
+    stored = 0
+    for claim in claims:
+        statement = str(claim.get("statement") or "").strip()
+        if not statement or not url:
+            continue
+        try:
+            record_claim(
+                db,
+                run_id=run.id,
+                statement=statement[:2000],
+                source_url=url,
+                data_kind="estimate",
+                hs_scope=run.guessed_hs_code,
+                product_scope=run.product,
+                period=claim.get("period"),
+                confidence="unknown",
+            )
+        except ValueError:
+            continue
+        state["claims"].append(claim)
+        stored += 1
+    return stored
+
+
+async def _absorb_page(db, run, executor, emit, state, result, action) -> int:
     url = str((result.data or {}).get("url") or action.args.get("url") or "")
+    requested = str((action.args or {}).get("url") or "")
     text = str((result.data or {}).get("text") or "")
     if not url:
-        return
-    state["urls"].append(url)
+        return 0
+    if url not in state["urls"]:
+        state["urls"].append(url)
     cred = executor.execute(
         ToolCall(tool="assess_credibility", args={"url": url, "title": "", "publisher": ""})
     )
@@ -644,29 +783,24 @@ async def _absorb_page(db, run, executor, emit, state, result, action) -> None:
             args={"text": text, "url": url, "product": run.product},
         )
     )
-    for claim in (extracted.data or {}).get("claims") or []:
-        state["claims"].append(claim)
-        try:
-            record_claim(
-                db,
-                run_id=run.id,
-                statement=str(claim.get("statement") or "")[:2000],
-                source_url=url,
-                data_kind="estimate",
-                hs_scope=run.guessed_hs_code,
-                product_scope=run.product,
-                period=claim.get("period"),
-                confidence="unknown",
-            )
-        except ValueError:
-            continue
+    claims = list((extracted.data or {}).get("claims") or [])
+    stored = _store_claims(db, run, state, url, claims)
+    mark_pages(
+        state,
+        [requested, url],
+        status="extracted" if stored else "fetched",
+        claim_count=stored,
+        excerpt=text,
+        db=db,
+    )
+    message_fa, event_type = page_progress_fa(stored)
     await emit(
         db,
         run,
         phase="trade_stats",
-        status="partial",
-        message_fa=f"شواهد صفحه استخراج شد ({len((extracted.data or {}).get('claims') or [])} ادعا)",
-        payload={"event_type": "market.evidence_ready", "url": url},
+        status="running",
+        message_fa=message_fa,
+        payload={"event_type": event_type, "url": url, "claim_count": stored},
         source_refs=[
             Source(
                 url=url,
@@ -679,6 +813,7 @@ async def _absorb_page(db, run, executor, emit, state, result, action) -> None:
         ],
         event_id=f"evt_{run.id}_page_{abs(hash(url)) % 10**8}",
     )
+    return stored
 
 
 def _lease_lost(state: dict[str, Any], run: Run) -> dict[str, Any]:
@@ -759,17 +894,19 @@ async def _finish(db, run, executor, emit, state, final_action, markets, memory_
         error_code=final_action.blocked_code or final_action.stop_reason if blocked or not markets else None,
         event_id=f"evt_{run.id}_market_compare",
     )
-    sources = [
-        Source(
-            url=url,
-            title=url,
-            publisher="web",
-            fetched_at="",
-            provider="free_web",
-            reliability_note="discovered during research",
-        )
-        for url in list(dict.fromkeys(state.get("urls") or []))[:12]
-    ]
+    sources = observation_sources(state.get("observations"))
+    if not sources:
+        sources = [
+            Source(
+                url=url,
+                title=url,
+                publisher="web",
+                fetched_at="",
+                provider="free_web",
+                reliability_note="obs:unread",
+            )
+            for url in list(dict.fromkeys(state.get("urls") or []))[:12]
+        ]
     return {
         "markets": markets,
         "recommended": recommended,
@@ -793,4 +930,8 @@ async def _finish(db, run, executor, emit, state, final_action, markets, memory_
         "conflicts": list(state.get("conflicts") or []) + list(final_action.conflicts or []),
         "tools_invoked": tools_invoked,
         "decision_source": final_action.decision_source,
+        "observation_counts": research_counts(
+            state.get("observations"),
+            list(state.get("claims") or []),
+        ),
     }

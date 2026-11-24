@@ -204,6 +204,7 @@ async def run_agentic_pipeline(run_id: str) -> None:
                 "MODEL_FAILED",
                 "MARKET_DISCOVERY_INCOMPLETE",
                 "BUYER_RESEARCH_BLOCKED",
+                "NO_NEW_SOURCES",
             }
             await _emit(
                 db,
