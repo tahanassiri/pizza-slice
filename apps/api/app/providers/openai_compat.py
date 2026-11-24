@@ -14,6 +14,7 @@ import httpx
 
 from app.providers.keyed import ModelCallError
 from app.providers.model_clearance import describe_provider_failure
+from app.providers.response_norm import profiled_model_request
 
 # Documented bases only. omnirouter.cc is the docs site, not the API host.
 # api.omnirouter.cc and api.omnirouter.ai do not answer.
@@ -230,7 +231,10 @@ class OpenAICompatLLM:
                 correction=correction,
             )
             try:
-                response = self._request("POST", "chat/completions", json_body=body)
+                response = profiled_model_request(
+                    self, lambda: self._request("POST", "chat/completions", json_body=body),
+                    prompt=body["messages"][0]["content"], method=method,
+                )
             except ModelCallError as exc:
                 return StructuredResult(
                     method=method,
@@ -391,13 +395,11 @@ class OpenAICompatLLM:
         from app.agents.decision_schema import AGENT_ACTION_JSON_SCHEMA
         from app.agents.llm_decide import render_decision_prompt
 
-        correction = str(context.get("_correction") or "")
         result = self.complete_structured(
             render_decision_prompt(context),
             AGENT_ACTION_JSON_SCHEMA,
             schema_name="nova_decision",
             purpose="decide",
-            correction=correction,
         )
         if result.category in {"temporary", "auth", "provider_error"}:
             raise _failure(

@@ -22,8 +22,9 @@ TOOL_ARG_SCHEMA: dict[str, dict[str, str]] = {
         "country": "optional string",
         "followups": "optional list of strings, at most 2",
     },
-    "fetch_page": {"url": "http(s) URL"},
-    "extract_claims": {"text": "untrusted page text", "url": "source URL", "product": "string"},
+    "fetch_page": {"url": "http(s) URL", "product_terms": "optional exact product translations found in the source"},
+    "extract_claims": {"url": "source URL; equivalent to fetch_page"},
+    "read_evidence": {"ids": "optional claim IDs", "country": "optional ISO2", "offset": "optional offset; page size 12"},
     "assess_credibility": {"url": "string", "title": "string", "publisher": "string"},
     "cross_check": {"claims": "list of claim objects"},
     "read_memory": {"kind": "string", "product": "string", "origin": "string", "metric": "string"},
@@ -90,9 +91,10 @@ tool: one of allowlisted tools when action=call_tool else null
 args: object matching the tool schema
 rationale_fa: short Persian reason (not chain-of-thought)
 stop_reason: string|null
-market_proposals: optional list of {country_code, recommendation, evidence_ids, data_scope, risks}
+market_proposals: updates on any action: {country_code, recommendation, evidence_ids, data_scope, risks, criteria}
   recommendation: recommended|risky|watch
-  evidence_ids: stable ids already present in CONTEXT.evidence — never invent ids
+  evidence_ids: stable claim IDs from CONTEXT.evidence or existing candidates
+  criteria: list of {criterion, evidence_ids} drawn from the proposal's own cited IDs
   data_scope: hs6|sector|total|qualitative
 unknowns: list of strings
 conflicts: list of strings
@@ -102,13 +104,17 @@ Do NOT score missing evidence with a number. Leave it unknown.
 Sector or total statistics are not product-specific demand.
 Market discovery does not need a selected destination and does not need prior memory.
 Call search_web before conclude or ask_user. Then choose which unread URL to fetch_page.
-CONTEXT.research_state counts unread, fetched, extracted, irrelevant, rejected, and verified claims.
-CONTEXT.sources are discovered pages with a stable id. Status is unread, fetched, extracted, irrelevant, or rejected.
+CONTEXT.sources tracks unread, fetched, extracted, extraction_failed, irrelevant, inaccessible pages.
 A title or snippet is not verified evidence and must not be cited as a market source.
 CONTEXT.evidence contains extracted claims only. market_proposals.evidence_ids must be those ids.
-CONTEXT.new_evidence_ids lists claims stored since the previous decision. Cite those ids, do not fetch the same page again.
-fetch_page stores claims from that page into CONTEXT.evidence. extract_claims can store claims too.
-A page status of extracted, irrelevant, or rejected is finished. Do not fetch or extract it again. Choose an unread URL or change_strategy.
+fetch_page extracts once. Its optional product_terms list gives exact translations from the page.
+extract_claims is a fetch_page alias. Pass the source URL, never page text.
+Do not refetch processed sources. Use read_evidence to retrieve older or omitted statements by ID, country or offset.
+Use existing candidates and country coverage to compare and update markets as evidence arrives.
+To resolve a question, set args.resolved_questions to [{"id":"q1","evidence_ids":["claim ID"]}].
+Conclude with supported markets once further research is unlikely to change the recommendation.
+Use unknowns for missing criteria. A qualitative recommendation needs country-specific product evidence.
+A rejected action includes its reason. Choose another source or approach, or synthesize the available evidence.
 Table claims copy headers, rows, units, years, HS codes, and country links from the page. Do not invent a number that is not in the claim.
 A qualitative proposal may use recommendation watch. Leave scores unknown. Do not invent a score.
 save_evidence writes memory only. It does not create CONTEXT.evidence ids.
@@ -141,6 +147,7 @@ def build_decision_context(
         tool_schema = {
             name: {"required": list(_REQUIRED_TOOL_ARGS.get(name, ()))}
             for name in sorted(ALLOWED_TOOLS)
+            if _REQUIRED_TOOL_ARGS.get(name)
         }
     else:
         tool_schema = {name: TOOL_ARG_SCHEMA.get(name, {}) for name in sorted(ALLOWED_TOOLS)}
@@ -216,5 +223,5 @@ def render_decision_prompt(context: dict[str, Any]) -> str:
 
     return DECISION_USER_TEMPLATE.replace(
         "__CONTEXT_JSON__",
-        json.dumps(context, ensure_ascii=False),
+        json.dumps(context, ensure_ascii=False, separators=(",", ":")),
     )

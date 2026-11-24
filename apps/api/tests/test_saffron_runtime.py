@@ -330,7 +330,7 @@ def test_processed_source_is_not_extracted_again_and_the_clock_stays_under_the_c
         assert any(item.key == "uncertainty" for item in result["markets"][0].metrics)
         assert any(item.key == "score_total" and item.value == "نامشخص" for item in result["markets"][0].metrics)
         stored = json.loads(db.get(ResearchTask, task.id).checkpoint_json)
-        assert stored["state"]["claims"]
+        assert stored["state"]["seen_claim_ids"]
         assert stored["effective_limits"]["max_runtime_seconds"] == 1800
         assert stored["active_seconds"] < 1800
         assert (stored.get("last_stop") or {}).get("code") != "runtime"

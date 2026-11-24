@@ -14,16 +14,19 @@ from app.schemas.contracts import Source
 
 SNIPPET_CHARS = 160
 TITLE_CHARS = 120
-MAX_STORED = 24
 MAX_CONTEXT_SOURCES = 8
 STATEMENT_CHARS = 240
+PROCESSED_STATUSES = frozenset({"extracted", "irrelevant", "extraction_failed", "inaccessible", "rejected"})
 
 
 def normalize_url(url: str) -> str:
     raw = (url or "").strip()
     if not raw:
         return ""
-    parsed = urlparse(raw)
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        return ""
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     path = parsed.path.rstrip("/") or "/"
@@ -47,6 +50,10 @@ def search_progress_fa(total: int, new_useful: int, thin: int) -> str:
 
 
 def page_progress_fa(claim_count: int, *, status: str = "") -> tuple[str, str]:
+    if status == "extraction_failed":
+        return "صفحه دریافت شد اما استخراج یا اعتبارسنجی ناموفق بود.", "research.extraction_failed"
+    if status == "inaccessible":
+        return "صفحه در دسترس نبود.", "research.source_inaccessible"
     if status == "irrelevant":
         return (
             "صفحه دریافت شد اما ردیف یا جمله مرتبط با محصول، کد HS، سال یا اصطلاح تجاری استخراج نشد.",
@@ -148,16 +155,13 @@ def absorb_search_results(
             urls.append(url)
         if useful:
             new_useful += 1
-    state["observations"] = observations[-MAX_STORED:]
+    state["observations"] = observations
     return {
         "total": total,
         "new_useful": new_useful,
         "thin": thin,
         "added": added,
     }
-
-
-PROCESSED_STATUSES = frozenset({"extracted", "irrelevant", "rejected"})
 
 
 def processed_source(state: dict, url: str) -> dict | None:
@@ -176,7 +180,7 @@ def page_read_status(*, stored: int, raw_claims: int, extract_outcome: str) -> s
         return "extracted"
     if raw_claims > 0 or extract_outcome == "rejected":
         return "rejected"
-    return "irrelevant"
+    return "irrelevant" if extract_outcome == "irrelevant" else "extraction_failed"
 
 
 def mark_pages(
@@ -191,7 +195,8 @@ def mark_pages(
     keys = {normalize_url(url) for url in urls if normalize_url(url)}
     if not keys:
         return
-    rank = {"unread": 0, "fetched": 1, "irrelevant": 2, "rejected": 2, "extracted": 3}
+    rank = {"unread": 0, "inaccessible": 1, "fetched": 2, "irrelevant": 3,
+            "rejected": 3, "extraction_failed": 3, "extracted": 4}
     snippet = " ".join((excerpt or "").split())[:SNIPPET_CHARS]
     for row in state.get("observations") or []:
         if row.get("url_key") not in keys and row.get("url") not in keys:
@@ -229,7 +234,9 @@ def load_observations(db: Session, run_id: str) -> list[dict]:
         if not note.startswith("obs:"):
             continue
         status = note.split(":", 1)[1]
-        if status not in {"unread", "fetched", "extracted", "irrelevant", "rejected"}:
+        if status == "rejected":
+            status = "extraction_failed"
+        if status not in PROCESSED_STATUSES | {"unread", "fetched"}:
             status = "unread"
         url = normalize_url(source.url) or source.url
         claim_count = by_url.get(url, 0)
@@ -247,18 +254,18 @@ def load_observations(db: Session, run_id: str) -> list[dict]:
                 "claim_count": claim_count,
             }
         )
-    return rows[-MAX_STORED:]
+    return rows
 
 
 def context_sources(observations: list[dict] | None) -> list[dict]:
     rows = list(observations or [])
     unread = [row for row in rows if row.get("status") == "unread"]
     later = [row for row in rows if row.get("status") != "unread"]
-    picked = (unread[-MAX_CONTEXT_SOURCES:] + later[-4:])[:MAX_CONTEXT_SOURCES]
+    picked = unread[-(MAX_CONTEXT_SOURCES - 2):] + later[-2:]
     compact = []
     for row in picked:
         status = str(row.get("status") or "unread")
-        snippet_limit = SNIPPET_CHARS if status == "unread" else 80
+        snippet_limit = SNIPPET_CHARS if status == "unread" else 0
         compact.append(
             {
                 "id": row.get("id"),
@@ -279,14 +286,17 @@ def research_counts(observations: list[dict] | None, evidence_rows: list[dict]) 
         "fetched": 0,
         "extracted": 0,
         "irrelevant": 0,
-        "rejected": 0,
+        "extraction_failed": 0,
+        "inaccessible": 0,
         "verified_claims": len(evidence_rows),
     }
     for row in observations or []:
         status = str(row.get("status") or "")
-        if status in {"unread", "fetched", "extracted", "irrelevant", "rejected"}:
+        if status == "rejected":
+            status = "extraction_failed"
+        if status in counts:
             counts[status] += 1
-    counts["processed"] = counts["extracted"] + counts["irrelevant"] + counts["rejected"]
+    counts["processed"] = sum(counts.get(status, 0) for status in PROCESSED_STATUSES)
     return counts
 
 
@@ -300,17 +310,13 @@ def compact_evidence(index: dict) -> list[dict]:
         if not key or key in seen:
             continue
         seen.add(key)
-        item = dict(row)
-        statement = str(item.get("statement") or "")
-        if len(statement) > STATEMENT_CHARS:
-            item["statement"] = statement[:STATEMENT_CHARS]
-        rows.append(item)
-    return rows[:12]
+        rows.append({**row, "id": key})
+    return rows
 
 
-def observation_sources(observations: list[dict] | None) -> list[Source]:
+def observation_sources(observations: list[dict] | None, *, limit: int | None = 12) -> list[Source]:
     sources: list[Source] = []
-    for row in list(observations or [])[:12]:
+    for row in list(observations or [])[:limit]:
         url = str(row.get("url") or "")
         if not url:
             continue
@@ -325,3 +331,49 @@ def observation_sources(observations: list[dict] | None) -> list[Source]:
             )
         )
     return sources
+
+
+def evidence_context(rows: list[dict], seen: set[str], selection: dict) -> list[dict]:
+    """Preview new evidence and let the model page through the entire claim ledger."""
+    if selection:
+        requested = selection.get("ids")
+        ids = set(map(str, requested[:12])) if isinstance(requested, list) else set()
+        country = str(selection.get("country") or "").upper()
+        try:
+            offset = max(0, int(selection.get("offset") or 0))
+        except (ValueError, TypeError):
+            offset = 0
+        matching = [row for row in rows if (not ids or row["id"] in ids) and (not country or row["country"] == country)]
+        selected = matching[offset:offset + 12]
+    else:
+        recent = [row for row in rows if row["id"] not in seen]
+        known = [row for row in reversed(rows) if row["id"] in seen]
+        selected = (recent + known[:4])[:12]
+    compact = []
+    for row in selected:
+        item = {
+            key: row[key]
+            for key in ("id", "claim_id", "country", "hs_scope", "period", "source_id")
+            if row.get(key)
+        }
+        if selection or row["id"] not in seen:
+            item["statement"] = str(row["statement"])[:500 if selection else STATEMENT_CHARS]
+        if selection:
+            item["source_url"] = row.get("source_url")
+        compact.append(item)
+    return compact
+
+
+def evidence_coverage(rows: list[dict], candidates: dict) -> dict:
+    coverage: dict = {}
+    for row in rows:
+        country = row.get("country") or "unmapped"
+        bucket = coverage.setdefault(country, {"claim_count": 0, "criteria": {}})
+        bucket["claim_count"] += 1
+    for country, proposal in candidates.items():
+        bucket = coverage.setdefault(country, {"claim_count": 0, "criteria": {}})
+        bucket["criteria"] = {
+            item["criterion"]: len(item["evidence_ids"])
+            for item in proposal.get("criteria") or []
+        }
+    return coverage

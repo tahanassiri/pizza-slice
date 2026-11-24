@@ -6,6 +6,7 @@ from app.agents.policy import DEFAULT_WEIGHTS, SCORE_WEIGHT_BOUNDS
 from app.agents.tool_contracts import MarketScoreCard, ScoreCriterion
 from app.schemas.contracts import Market, MarketMetric, Source
 from app.trade_data.wits import ISO3_NAME_FA, ISO3_TO_ISO2
+from app.tools.extract import country_code, country_mentions
 
 
 def clamp_weights(proposed: dict[str, float] | None) -> dict[str, float]:
@@ -171,6 +172,56 @@ def _proposal_evidence_ids(proposal: dict) -> list[str]:
     return []
 
 
+def validate_market_proposal(
+    proposal: dict, *, product: str, origin: str, evidence_index: dict, visible: set[str],
+) -> tuple[dict | None, str]:
+    code = country_code(str(proposal.get("country_code") or ""))
+    if not code or code == country_code(origin):
+        return None, "invalid_destination"
+    ids = list(dict.fromkeys(_proposal_evidence_ids(proposal)))
+    if not ids:
+        return None, "missing_claim_ids"
+    rows = [evidence_index.get(ref) for ref in ids]
+    if any(not row or not row.get("source_url") for row in rows):
+        return None, "unknown_or_ambiguous_claim_id"
+    if any(row["id"] not in visible for row in rows):
+        return None, "claim_not_read"
+    if any(str(row.get("product") or "").casefold() != product.casefold() for row in rows):
+        return None, "product_mismatch"
+    if any(row.get("country") and row["country"] != code for row in rows):
+        return None, "country_mismatch"
+    if not any(
+        row.get("country") == code or code in country_mentions(str(row.get("statement") or ""))
+        for row in rows
+    ):
+        return None, "no_destination_specific_evidence"
+    if proposal.get("data_scope") in {"sector", "total"}:
+        return None, "sector_or_total_is_not_product_evidence"
+    if proposal.get("recommendation") not in {"recommended", "risky", "watch"}:
+        return None, "invalid_recommendation"
+    ids = list(dict.fromkeys(row["id"] for row in rows))
+    criteria: dict[str, list[str]] = {}
+    raw_criteria = proposal.get("criteria")
+    for item in raw_criteria if isinstance(raw_criteria, list) else []:
+        key = item.get("criterion") if isinstance(item, dict) else None
+        if not isinstance(key, str) or key not in SCORE_WEIGHT_BOUNDS:
+            continue
+        refs = item.get("evidence_ids")
+        if isinstance(refs, list):
+            refs = [ref for ref in ids if ref in refs]
+            if refs:
+                criteria[key] = refs
+    raw_risks = proposal.get("risks")
+    return {
+        "country_code": code,
+        "recommendation": proposal["recommendation"],
+        "data_scope": "qualitative",
+        "evidence_ids": ids,
+        "criteria": [{"criterion": key, "evidence_ids": refs} for key, refs in criteria.items()],
+        "risks": [risk[:240] for risk in raw_risks[:3] if isinstance(risk, str)] if isinstance(raw_risks, list) else [],
+    }, ""
+
+
 def score_from_evidence_markets(
     proposals: list[dict],
     *,
@@ -225,15 +276,12 @@ def score_from_evidence_markets(
         if "sector" in scopes or "total" in scopes:
             requested_scope = "qualitative"
         statements = [str(row.get("statement") or "")[:240] for row in cited if row.get("statement")]
-        periods = [str(row.get("period")) for row in cited if row.get("period")]
         criteria = [
             _criterion(
                 "demand",
                 None,
                 confidence="unknown",
-                note=statements[0] if statements else "شاهد عددی تقاضا ثبت نشده",
-                refs=evidence_ids[:4],
-                date_scope=periods[0] if periods else None,
+                note="شاهد اختصاصی برای معیار تقاضا ثبت نشده",
             ),
             _criterion("legal", None, confidence="unknown", note="نیازمند منبع رسمی روزآمد"),
             _criterion("logistics", None, confidence="unknown", note="نرخ حمل استعلام نشده"),
@@ -241,6 +289,17 @@ def score_from_evidence_markets(
             _criterion("competition", None, confidence="unknown", note="رقابت تکمیل نشده"),
             _criterion("access", None, confidence="unknown", note="دسترسی بدون شاهد نامعلوم است"),
         ]
+        for item in proposal.get("criteria") or []:
+            key = item.get("criterion")
+            refs = [ref for ref in (item.get("evidence_ids") or []) if ref in evidence_ids]
+            if not refs:
+                continue
+            for criterion in criteria:
+                if criterion.key == key:
+                    criterion.evidence_refs = refs
+                    criterion.note_fa = str(index[refs[0]].get("statement") or "")[:500]
+                    criterion.date_scope = index[refs[0]].get("period")
+                    break
         for criterion in criteria:
             if criterion.score_value in _BANNED_SCORE_FILLERS:
                 criterion.score_value = None
@@ -270,7 +329,16 @@ def score_from_evidence_markets(
     recommended = [card for card in cards if card.recommendation == "recommended"][:3]
     risky = [card for card in cards if card.recommendation == "risky"][:2]
     watch = [card for card in cards if card.recommendation == "watch"][:5]
-    return cards_to_markets(recommended + risky + watch, sources=sources, source_name="cited-evidence")
+    by_country = {
+        str(proposal.get("country_code") or "").upper().strip(): {
+            str((index.get(ref) or {}).get("source_url") or "") for ref in _proposal_evidence_ids(proposal)
+        }
+        for proposal in proposals
+    }
+    markets = cards_to_markets(recommended + risky + watch, source_name="cited-evidence")
+    for market in markets:
+        market.sources = [source for source in (sources or []) if source.url in by_country[market.country_code]]
+    return markets
 
 
 def cards_to_markets(
@@ -319,7 +387,7 @@ def cards_to_markets(
         evidence = list(card.rationale_fa)
         if demand and demand.note_fa:
             evidence.insert(0, demand.note_fa)
-        unknowns = [c.note_fa for c in card.criteria if c.unknown]
+        unknowns = [c.note_fa for c in card.criteria if c.unknown and not c.evidence_refs]
         risks = []
         if card.recommendation == "risky":
             risks.append("بازار پرریسک/هشدار — نباید با پیشنهاد اصلی اشتباه شود")

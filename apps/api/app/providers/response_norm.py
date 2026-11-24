@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
+from time import monotonic
+
 import json
 import logging
 import re
@@ -33,10 +36,66 @@ def _usage(payload: dict) -> dict[str, int]:
         value = raw.get(key)
         if isinstance(value, int):
             out[key] = value
+    for parent, source, target in (
+        ("prompt_tokens_details", "cached_tokens", "cached_tokens"),
+        ("completion_tokens_details", "reasoning_tokens", "reasoning_tokens"),
+    ):
+        detail = raw.get(parent)
+        if isinstance(detail, dict) and isinstance(detail.get(source), int):
+            out[target] = detail[source]
     cost = raw.get("cost")
     if isinstance(cost, (int, float)) and not isinstance(cost, bool):
         out["cost_micros"] = int(float(cost) * 1_000_000)
     return out
+
+
+model_purpose: ContextVar[str | None] = ContextVar("model_purpose", default=None)
+
+
+def profiled_model_request(provider, request, *, prompt: str, method: str):
+    """Record each provider attempt, including retries, without logging prompt or response text."""
+    purpose = model_purpose.get()
+    if purpose is None:
+        return request()
+    started = monotonic()
+    response = None
+    error = None
+    try:
+        response = request()
+        return response
+    except Exception as exc:
+        error = type(exc).__name__
+        raise
+    finally:
+        try:
+            payload = response.json() if response is not None else {}
+        except ValueError:
+            payload = {}
+        payload = payload if isinstance(payload, dict) else {}
+        usage = _usage(payload)
+        gemini = payload.get("usageMetadata")
+        if isinstance(gemini, dict):
+            usage = {
+                target: gemini[source]
+                for target, source in {
+                    "prompt_tokens": "promptTokenCount", "completion_tokens": "candidatesTokenCount",
+                    "reasoning_tokens": "thoughtsTokenCount", "total_tokens": "totalTokenCount",
+                    "cached_tokens": "cachedContentTokenCount",
+                }.items()
+                if isinstance(gemini.get(source), int)
+            }
+        candidates = payload.get("candidates") or payload.get("choices") or []
+        first = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict) else {}
+        row = {
+            "purpose": purpose, "provider": provider.id, "model": provider.model, "method": method,
+            "elapsed_ms": round((monotonic() - started) * 1000),
+            "prompt_chars": len(prompt), "http_status": response.status_code if response is not None else None,
+            "finish_reason": first.get("finish_reason") or first.get("finishReason"), "error": error,
+            "usage": usage,
+        }
+        if not hasattr(provider, "model_calls"):
+            provider.model_calls = []
+        provider.model_calls.append(row)
 
 
 def message_text(message: Any) -> tuple[str, str]:

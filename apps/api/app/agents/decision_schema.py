@@ -42,8 +42,23 @@ AGENT_ACTION_JSON_SCHEMA: dict[str, Any] = {
                     "evidence_ids": {"type": "array", "items": {"type": "string"}},
                     "data_scope": {"type": "string", "enum": ["hs6", "sector", "total", "qualitative"]},
                     "risks": {"type": "array", "items": {"type": "string"}},
+                    "criteria": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "criterion": {
+                                    "type": "string",
+                                    "enum": ["demand", "access", "legal", "logistics", "payment", "competition"],
+                                },
+                                "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                            },
+                            "required": ["criterion", "evidence_ids"],
+                        },
+                    },
                 },
-                "required": ["country_code", "recommendation", "evidence_ids", "data_scope", "risks"],
+                "required": ["country_code", "recommendation", "evidence_ids", "data_scope", "risks", "criteria"],
             },
         },
         "unknowns": {"type": "array", "items": {"type": "string"}},
@@ -64,7 +79,7 @@ AGENT_ACTION_JSON_SCHEMA: dict[str, Any] = {
 _REQUIRED_TOOL_ARGS = {
     "search_web": ("query",),
     "fetch_page": ("url",),
-    "extract_claims": ("text", "url"),
+    "extract_claims": ("url",),
     "verify_company": ("company_name", "country"),
     "classify_product": ("product",),
 }

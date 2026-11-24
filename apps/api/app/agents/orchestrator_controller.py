@@ -78,10 +78,8 @@ async def _emit(db: Session, run: Run, **kwargs) -> RunEventOut:
     event, created = append_event(db, run_id=run.id, event_id=event_id, **kwargs)
     run.phase = phase
     status = kwargs["status"]
-    if run.phase != "report" and status in {"completed", "partial"}:
-        run.status = "running"
-    else:
-        run.status = status if status != "partial" or run.phase == "report" else "partial"
+    if run.status != "cancelled":
+        run.status = "running" if run.phase != "report" and status in {"completed", "partial"} else status
     run.updated_at = datetime.now(timezone.utc)
     if kwargs.get("error_code"):
         run.error_code = kwargs["error_code"]
@@ -101,7 +99,7 @@ async def _emit(db: Session, run: Run, **kwargs) -> RunEventOut:
                 "MODEL_RATE_LIMITED",
                 "MODEL_UNAVAILABLE",
                 "MODEL_FAILED",
-            }
+            } or str(kwargs["error_code"]).startswith("OPERATIONAL_")
             else 0
         )
     db.commit()
@@ -181,18 +179,21 @@ async def run_agentic_pipeline(run_id: str) -> None:
             task_id=claimed.id,
             lease_owner=_WORKER_ID,
         )
+        if result.get("stop_reason") == "LEASE_LOST":
+            return
         markets = result.get("markets") or []
         sources = result.get("sources") or []
-        recommended = result.get("recommended") or markets[:3]
+        recommended = result.get("recommended") or []
         risky = result.get("risky") or []
         data_scope = result.get("data_scope") or "sector"
         trade_meta = result.get("trade_meta") or {}
+        provisional = bool(result.get("provisional"))
+        stop = str(result.get("stop_reason") or "")
         quality = trade_meta.get("quality_status") or (
             "partial" if markets else "unavailable"
         )
 
         if not markets:
-            stop = str(result.get("stop_reason") or "")
             notes = str((result.get("plan") or {}).get("notes_fa") or "")
             blocked = stop in {
                 "LLM_UNAVAILABLE",
@@ -205,7 +206,7 @@ async def run_agentic_pipeline(run_id: str) -> None:
                 "MARKET_DISCOVERY_INCOMPLETE",
                 "BUYER_RESEARCH_BLOCKED",
                 "NO_NEW_SOURCES",
-            }
+            } or stop.startswith("OPERATIONAL_")
             await _emit(
                 db,
                 run,
@@ -247,12 +248,12 @@ async def run_agentic_pipeline(run_id: str) -> None:
                 is_mock=False,
             )
             run.report_json = report.model_dump_json()
-            run.status = "partial"
+            if run.status != "cancelled":
+                run.status = "partial"
             run.phase = "report"
             run.error_code = stop if blocked else "INSUFFICIENT_EVIDENCE"
             run.error_message_fa = (notes or "پژوهش مسدود است") if blocked else "شواهد کافی نیست"
             run.error_retryable = 1
-            db.commit()
             await _emit(
                 db,
                 run,
@@ -264,7 +265,6 @@ async def run_agentic_pipeline(run_id: str) -> None:
                 db,
                 task.id,
                 status="blocked" if blocked else "completed",
-                checkpoint={"version": 2, "markets": 0, "stop_reason": stop},
                 error_code=run.error_code,
                 error_message_fa=run.error_message_fa,
             )
@@ -274,7 +274,7 @@ async def run_agentic_pipeline(run_id: str) -> None:
             db,
             run,
             phase="conclude",
-            status="completed",
+            status="partial" if provisional else "completed",
             message_fa=(
                 f"رتبه‌بندی آماده — {len(recommended)} پیشنهاد، {len(risky)} پرریسک. "
                 "برای تحقیق خریدار یک کشور را انتخاب کنید."
@@ -283,6 +283,7 @@ async def run_agentic_pipeline(run_id: str) -> None:
                 "event_type": "market.gate",
                 "recommended": [m.country_code for m in recommended],
                 "risky": [m.country_code for m in risky],
+                "provisional": provisional,
                 "awaiting": "select_country",
             },
         )
@@ -294,7 +295,8 @@ async def run_agentic_pipeline(run_id: str) -> None:
             product=run.product,
             origin_country=run.origin_country,
             summary_fa=(
-                f"تحلیل ایجنت‌محور برای «{run.product}» از {src_name}"
+                ("نتایج موقت پس از توقف عملیات. " if provisional else "")
+                + f"تحلیل ایجنت‌محور برای «{run.product}» از {src_name}"
                 + (f" (سال مرجع {ref_year})" if ref_year else "")
                 + f". دامنه داده: {data_scope}. کیفیت: {quality}. "
                 f"{len(recommended)} بازار پیشنهادی"
@@ -323,27 +325,26 @@ async def run_agentic_pipeline(run_id: str) -> None:
         )
         run.report_json = report.model_dump_json()
         # Buyer research remains gated on explicit country select (no auto-buyers).
-        run.status = "completed"
+        if run.status != "cancelled":
+            run.status = "partial" if provisional else "completed"
         run.phase = "report"
-        run.error_code = None
-        run.error_message_fa = None
-        db.commit()
+        run.error_code = stop if provisional else None
+        run.error_message_fa = (result.get("plan") or {}).get("notes_fa") if provisional else None
+        run.error_retryable = int(provisional)
         await _emit(
             db,
             run,
             phase="report",
-            status="completed",
+            status="partial" if provisional else "completed",
             message_fa="گزارش بازار آماده است — برای خریداران یک کشور را انتخاب کنید",
             payload={"event_type": "report.ready", "awaiting": "select_country"},
         )
         finish_task(
             db,
             task.id,
-            status="completed",
-            checkpoint={
-                "markets": len(markets),
-                "recommended": [m.country_code for m in recommended],
-            },
+            status="blocked" if provisional else "completed",
+            error_code=run.error_code,
+            error_message_fa=run.error_message_fa,
         )
     except Exception:
         logging.getLogger(__name__).exception("Agentic pipeline failed for run %s", run_id)

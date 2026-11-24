@@ -21,7 +21,7 @@ from app.tools.page_fetch import fetch_page
 from app.tools.verify_company import verify_company
 
 
-def _hs_from_evidence(llm: object, product: str, hypothesis: str | None) -> tuple[str | None, str]:
+def _hs_from_evidence(llm: object, product: str, hypothesis: str | None, *, confirm) -> tuple[str | None, str]:
     """Confirm the model's HS6 against one web search. Do not invent a code the model did not return."""
 
     from app.agents.hs_code import accept_hs_evidence
@@ -44,7 +44,7 @@ def _hs_from_evidence(llm: object, product: str, hypothesis: str | None) -> tupl
     confirmed = None
     if search_ok and source_text and hasattr(llm, "confirm_hs"):
         try:
-            confirmed = llm.confirm_hs(product, source_text)  # type: ignore[attr-defined]
+            confirmed = confirm(lambda: llm.confirm_hs(product, source_text))  # type: ignore[attr-defined]
         except Exception:
             confirmed = None
     return accept_hs_evidence(
@@ -163,6 +163,8 @@ class ToolExecutor:
                 product=str(args.get("product") or ""),
                 tables=args.get("tables") if isinstance(args.get("tables"), list) else None,
                 hs_code=str(args.get("hs_code") or "") or None,
+                origin=str(args.get("origin") or ""),
+                product_terms=args.get("product_terms") if isinstance(args.get("product_terms"), list) else None,
             )
         if tool == "assess_credibility":
             return assess_credibility(
@@ -299,7 +301,13 @@ class ToolExecutor:
                 reserved = True
                 self.budget = budget_mod.ensure_run_budget(self.db, self.run_id)
                 if not stub:
-                    hs, conf = _hs_from_evidence(self.llm, product, hs)
+                    hs, conf = _hs_from_evidence(
+                        self.llm, product, hs,
+                        confirm=lambda call: guarded_model_call(
+                            self.db, self.run_id, "confirm_classification", call,
+                            provider_id=str(getattr(self.llm, "id", "llm")),
+                        ),
+                    )
             elif hs_hint:
                 hs, conf = str(hs_hint), "medium"
             return ToolResult(

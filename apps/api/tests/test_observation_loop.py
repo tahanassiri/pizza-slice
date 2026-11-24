@@ -454,7 +454,7 @@ def test_conclude_after_unread_sources_is_sent_back_once():
         )
         assert executor.calls == 1
         assert result["markets"] == []
-        assert result["stop_reason"] is None
+        assert result["stop_reason"] == "insufficient_evidence"
         assert UNREAD_SOURCE_FEEDBACK in executor.llm.contexts[-1].get("_correction", "")
         assert len(executor.llm.contexts) == 3
     finally:

@@ -18,6 +18,7 @@ ALLOWED_TOOLS = frozenset(
         "search_web",
         "fetch_page",
         "extract_claims",
+        "read_evidence",
         "assess_credibility",
         "cross_check",
         "read_memory",

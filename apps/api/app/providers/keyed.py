@@ -11,6 +11,8 @@ import time
 
 import httpx
 
+from app.providers.response_norm import parse_chat_completion, profiled_model_request
+
 _SECRET = re.compile(r"(AIza[0-9A-Za-z_\-]{8,}|sk-[A-Za-z0-9_\-]{8,}|Bearer\s+\S+)", re.I)
 
 
@@ -126,7 +128,7 @@ class KeyedGeminiLLM:
         if schema is not None:
             config["responseMimeType"] = "application/json"
             config["responseSchema"] = schema
-        return client.post(
+        return profiled_model_request(self, lambda: client.post(
             (
                 "https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{self.model}:generateContent"
@@ -136,7 +138,7 @@ class KeyedGeminiLLM:
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": config,
             },
-        )
+        ), prompt=prompt, method="json_schema" if schema else "prompt")
 
     @staticmethod
     def _decision_text(payload: dict) -> tuple[str, str]:
@@ -215,9 +217,6 @@ class KeyedGeminiLLM:
         from app.agents.llm_decide import render_decision_prompt
 
         prompt = render_decision_prompt(context)
-        correction = str(context.get("_correction") or "")
-        if correction:
-            prompt += "\n\nValidation feedback: " + correction[:400] + "\nReturn only the corrected JSON object."
         self.output_method = "json_schema"
         try:
             with httpx.Client(timeout=self.timeout) as client:
@@ -264,12 +263,13 @@ class KeyedOpenAICompatLLM:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.tokens_used = 0
+        self.cost_usd = 0.0
         self.output_method = "prompt"
 
     def _chat(self, prompt: str, *, max_tokens: int = 1024, temperature: float = 0) -> str:
         try:
             with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(
+                response = profiled_model_request(self, lambda: client.post(
                     f"{self.base_url}/chat/completions",
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json={
@@ -278,14 +278,17 @@ class KeyedOpenAICompatLLM:
                         "temperature": temperature,
                         "max_tokens": max_tokens,
                     },
-                )
+                ), prompt=prompt, method="prompt")
         except httpx.TimeoutException as exc:
             raise _failure(self.model, http_status=None, error=type(exc).__name__) from exc
         except httpx.HTTPError as exc:
             raise _failure(self.model, http_status=None, error=type(exc).__name__) from exc
         if response.status_code != 200:
             raise _failure(self.model, http_status=response.status_code, body=response.text)
-        return (response.json().get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        outcome = parse_chat_completion(response.json(), http_status=200)
+        self.tokens_used += int(outcome.usage.get("total_tokens") or 0)
+        self.cost_usd += outcome.cost or 0.0
+        return outcome.content
 
     def classify_hs(self, product: str, hs_hint: str | None) -> tuple[str | None, str]:
         if hs_hint and hs_hint.strip():
@@ -319,7 +322,6 @@ class KeyedOpenAICompatLLM:
         from app.providers.structured_request import next_method, parameter_rejected, request_body, select_output_method
 
         prompt = render_decision_prompt(context)
-        correction = str(context.get("_correction") or "")
         method = select_output_method(["structured_outputs", "response_format"])
         tokens = 4096
         length_retried = False
@@ -333,16 +335,15 @@ class KeyedOpenAICompatLLM:
                 schema=AGENT_ACTION_JSON_SCHEMA,
                 schema_name="nova_decision",
                 max_tokens=tokens,
-                correction=correction,
                 router_controls=False,
             )
             try:
                 with httpx.Client(timeout=self.timeout) as client:
-                    response = client.post(
+                    response = profiled_model_request(self, lambda: client.post(
                         f"{self.base_url}/chat/completions",
                         headers={"Authorization": f"Bearer {self.api_key}"},
                         json=body,
-                    )
+                    ), prompt=prompt, method=method)
             except httpx.TimeoutException as exc:
                 raise _failure(self.model, http_status=None, error=type(exc).__name__) from exc
             except httpx.HTTPError as exc:
@@ -354,6 +355,7 @@ class KeyedOpenAICompatLLM:
                 raise _failure(self.model, http_status=response.status_code, body=response.text)
             outcome = parse_chat_completion(response.json(), http_status=200)
             self.tokens_used += int(outcome.usage.get("total_tokens") or 0)
+            self.cost_usd += outcome.cost or 0.0
             if outcome.truncated and not length_retried and tokens < 8192:
                 length_retried = True
                 tokens = 8192

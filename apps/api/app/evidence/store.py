@@ -131,7 +131,9 @@ def record_claim(
 
 def claims_for_run(db: Session, run_id: str) -> list[Claim]:
     return list(
-        db.scalars(select(Claim).where(Claim.run_id == run_id, Claim.status == "active")).all()
+        db.scalars(
+            select(Claim).where(Claim.run_id == run_id, Claim.status == "active").order_by(Claim.created_at, Claim.id)
+        ).all()
     )
 
 
@@ -139,12 +141,13 @@ def evidence_index_for_run(db: Session, run_id: str) -> dict[str, dict]:
     """Stable evidence ids the model may cite. Missing fields stay null."""
 
     index: dict[str, dict] = {}
-    rows = list(db.scalars(select(Claim).where(Claim.run_id == run_id)).all())
+    rows = claims_for_run(db, run_id)
     for row in rows:
         evidence_id = row.evidence_id or row.id
-        index[evidence_id] = {
-            "id": evidence_id,
+        claim = {
+            "id": row.id,
             "claim_id": row.id,
+            "source_id": evidence_id,
             "source_url": row.source_url,
             "period": row.period,
             "product": row.product_scope,
@@ -154,7 +157,12 @@ def evidence_index_for_run(db: Session, run_id: str) -> dict[str, dict]:
             "data_scope": "qualitative",
             "data_kind": row.data_kind,
         }
-        index[row.id] = index[evidence_id]
+        index[row.id] = claim
+        # An older source reference can only resolve when it identifies one claim.
+        if evidence_id not in index:
+            index[evidence_id] = claim
+        elif evidence_id != row.id:
+            index[evidence_id] = {}
     return index
 
 

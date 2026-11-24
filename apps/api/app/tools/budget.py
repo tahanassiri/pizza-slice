@@ -187,4 +187,10 @@ def guarded_model_call(db: Session, run_id: str, purpose: str, fn, *, provider_i
         tool_name=purpose,
         detail_fa=f"رزرو بودجه پیش از فراخوانی مدل ({purpose})",
     )
-    return fn()
+    from app.providers.response_norm import model_purpose
+
+    token = model_purpose.set(purpose)
+    try:
+        return fn()
+    finally:
+        model_purpose.reset(token)

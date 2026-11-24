@@ -164,7 +164,7 @@ def fetch_page(url: str) -> ToolResult:
         from app.tools.extract import extract_html_tables
 
         tables = extract_html_tables(html_text)
-        text = html_text.replace("<script", " <!--").replace("<style", " <!--")
+        text = re.sub(r"<(script|style|noscript)\b[^>]*>.*?</\1>", " ", html_text, flags=re.I | re.S)
         text = re.sub(r"<[^>]+>", " ", text)
         text = _INJECTION.sub("[untrusted-text]", text)
         text = re.sub(r"\s+", " ", text).strip()[:12000]
