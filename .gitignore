@@ -4,6 +4,8 @@ out/
 dist/
 .env
 .env.local
+nova-deploy-key
+nova-deploy-key.pub
 *.log
 .DS_Store
 coverage/
