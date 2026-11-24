@@ -2,7 +2,7 @@ import asyncio
 
 from app.agents.decision_loop import _store_claims, run_decision_loop
 from app.agents.decision_schema import validate_decision
-from app.agents.market_scorer import validate_market_proposal
+from app.agents.market_scorer import score_from_evidence_markets, validate_market_proposal
 from app.agents.observations import compact_evidence, evidence_context, load_observations, normalize_url, page_read_status
 from app.agents.tool_contracts import ToolResult
 from app.db.session import SessionLocal
@@ -82,6 +82,62 @@ def test_world_exports_alone_do_not_support_a_destination_recommendation():
     )
     assert candidate is None
     assert reason == "no_destination_demand_or_purchase_evidence"
+
+
+def test_country_product_family_evidence_can_publish_a_labelled_watch_market():
+    proposal = {"country_code": "DE", "recommendation": "watch", "data_scope": "product_family",
+                "evidence_ids": ["cl_1"], "criteria": [{"criterion": "demand", "evidence_ids": ["cl_1"]}]}
+    claim = {"id": "cl_1", "country": "DE", "product": "kitchen bowls", "source_url": "https://example.com/wood",
+             "statement": "Germany imported wooden tableware in 2024.",
+             "trade": {"reporter": "DE", "partner": "WLD", "flow": "import"}}
+    kwargs = {"product": "kitchen bowls", "origin": "Iran", "evidence_index": {"cl_1": claim}, "visible": {"cl_1"}}
+    candidate, reason = validate_market_proposal(proposal, **kwargs)
+    assert candidate is not None and reason == ""
+    market, = score_from_evidence_markets([candidate], product="kitchen bowls", evidence_index=kwargs["evidence_index"])
+    metrics = {metric.key: metric.value for metric in market.metrics}
+    assert metrics["data_scope"] == "product_family" and metrics["score_total"] == "نامشخص"
+    assert metrics["recommendation"] == "watch"
+    assert validate_market_proposal({**proposal, "recommendation": "recommended"}, **kwargs)[0] is None
+    assert validate_market_proposal({**proposal, "data_scope": "total"}, **kwargs)[0] is None
+    assert validate_market_proposal({**proposal, "criteria": []}, **kwargs)[0] is None
+
+
+def test_equivalent_evidence_reads_do_not_repeat_full_claims(monkeypatch):
+    contexts, outcomes = [], []
+    monkeypatch.setattr(admin_service, "read_safety", lambda _db: {})
+
+    class Model:
+        id = "openrouter"
+        research_cleared = True
+
+        def decide_research_action(self, context):
+            contexts.append(context)
+            if len(contexts) == 1:
+                return {"action": "call_tool", "tool": "read_evidence", "args": {"country": "DE"}}
+            if len(contexts) == 2:
+                ref = context["evidence"][0]["id"]
+                return {"action": "call_tool", "tool": "read_evidence", "args": {"ids": [ref]}}
+            return {"action": "conclude", "stop_reason": "insufficient_evidence"}
+
+    class Executor:
+        llm = Model()
+        budget = None
+
+    async def emit(_db, _run, **event):
+        payload = event.get("payload") or {}
+        if payload.get("event_type") == "research.outcome":
+            outcomes.append(payload)
+
+    with SessionLocal() as db:
+        run = Run(id="run_repeat_evidence_view", product="tea", origin_country="Iran", status="running")
+        db.add(run)
+        db.commit()
+        record_claim(db, run_id=run.id, statement="Germany imported tea.", source_url="https://example.com/tea",
+                     product_scope="tea", country_scope="DE")
+        asyncio.run(run_decision_loop(db, run, Executor(), emit, checkpoint={"completed_steps": ["classify", "memory"]}))
+    assert "statement" in contexts[1]["evidence"][0]
+    assert "statement" not in contexts[2]["evidence"][0]
+    assert outcomes[1]["error_code"] == "EVIDENCE_ALREADY_REVIEWED"
 
 
 def test_equivalent_wits_sources_and_trade_rows_count_once():

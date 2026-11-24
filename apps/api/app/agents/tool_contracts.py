@@ -54,7 +54,7 @@ class MarketScoreCard(BaseModel):
     weights: dict[str, float] = Field(default_factory=dict)
     total: float | None = None
     recommendation: Literal["recommended", "risky", "watch"] = "watch"
-    data_scope: Literal["hs6", "sector", "total", "qualitative"] = "sector"
+    data_scope: Literal["hs6", "product_family", "sector", "total", "qualitative"] = "sector"
     rationale_fa: list[str] = Field(default_factory=list)
 
 

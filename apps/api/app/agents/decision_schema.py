@@ -41,7 +41,7 @@ AGENT_ACTION_JSON_SCHEMA: dict[str, Any] = {
                     "country_code": {"type": "string"},
                     "recommendation": {"type": "string", "enum": ["recommended", "risky", "watch"]},
                     "evidence_ids": {"type": "array", "items": {"type": "string"}},
-                    "data_scope": {"type": "string", "enum": ["hs6", "sector", "total", "qualitative"]},
+                    "data_scope": {"type": "string", "enum": ["hs6", "product_family", "sector", "total", "qualitative"]},
                     "risks": {"type": "array", "items": {"type": "string"}},
                     "criteria": {
                         "type": "array",

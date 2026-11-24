@@ -498,7 +498,7 @@ async def run_decision_loop(
             context["tool_schema"] = {}
         context["coverage"] = evidence_coverage(evidence_rows, state["candidates"])
         context["candidates"] = [
-            {key: value for key, value in candidate.items() if key not in {"risks", "data_scope"}}
+            {key: value for key, value in candidate.items() if key != "risks"}
             for candidate in state["candidates"].values()
         ]
         context["questions"] = {
@@ -691,8 +691,17 @@ async def run_decision_loop(
             elif tool == "read_evidence":
                 evidence_selection = args or {"offset": 0}
                 found = evidence_context(evidence_rows, visible, evidence_selection)
-                feedback = f"Evidence retrieval matched {len(found)} claims in this page."
-                error_code = None if found else "NO_MATCHING_EVIDENCE"
+                page_key = "|".join(sorted(row["id"] for row in found))
+                previous_pages = checkpoint.get("evidence_read_pages") or []
+                if not found:
+                    feedback, error_code = "هیچ شاهدی با این انتخاب تطبیق نداشت.", "NO_MATCHING_EVIDENCE"
+                elif page_key in previous_pages:
+                    evidence_selection = {}
+                    feedback = "متن همین شاهدها قبلاً نمایش داده شد. از شناسه‌های موجود استفاده کنید یا شاهد متفاوتی بخوانید."
+                    error_code = "EVIDENCE_ALREADY_REVIEWED"
+                else:
+                    checkpoint["evidence_read_pages"] = [*previous_pages, page_key][-16:]
+                    feedback = f"متن {len(found)} شاهد برای مرور انتخاب شد."
             elif tool == "save_evidence" and args.get("kind") == "market_stats":
                 feedback, error_code = "Market memory is written from validated research results.", "MARKET_MEMORY_MANAGED"
             else:

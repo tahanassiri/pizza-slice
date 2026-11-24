@@ -212,6 +212,7 @@ def validate_market_proposal(
         return None, "no_destination_specific_evidence"
     if proposal.get("data_scope") in {"sector", "total"}:
         return None, "sector_or_total_is_not_product_evidence"
+    family = proposal.get("data_scope") == "product_family"
     if proposal.get("recommendation") not in {"recommended", "risky", "watch"}:
         return None, "invalid_recommendation"
     if proposal["recommendation"] == "recommended" and not any(
@@ -231,11 +232,13 @@ def validate_market_proposal(
             refs = [ref for ref in ids if ref in refs and _trade_supports_criterion(by_id[ref], key, code, origin_code)]
             if refs:
                 criteria[key] = refs
+    if family and (proposal["recommendation"] != "watch" or not criteria.get("demand")):
+        return None, "product_family_requires_watch_with_destination_demand_evidence"
     raw_risks = proposal.get("risks")
     return {
         "country_code": code,
         "recommendation": proposal["recommendation"],
-        "data_scope": "qualitative",
+        "data_scope": "product_family" if family else "qualitative",
         "evidence_ids": ids,
         "criteria": [{"criterion": key, "evidence_ids": refs} for key, refs in criteria.items()],
         "risks": [risk[:240] for risk in raw_risks[:3] if isinstance(risk, str)] if isinstance(raw_risks, list) else [],
@@ -288,10 +291,12 @@ def score_from_evidence_markets(
         if requested not in {"recommended", "risky", "watch"}:
             requested = "watch"
         requested_scope = str(proposal.get("data_scope") or "qualitative")
-        if requested_scope not in {"hs6", "sector", "total", "qualitative"}:
+        if requested_scope not in {"hs6", "product_family", "sector", "total", "qualitative"}:
             requested_scope = "qualitative"
         if sector_only or requested_scope in {"sector", "total"}:
             # Do not publish a product winner from group statistics.
+            continue
+        if requested_scope == "product_family" and requested != "watch":
             continue
         if "sector" in scopes or "total" in scopes:
             requested_scope = "qualitative"
@@ -381,7 +386,7 @@ def cards_to_markets(
         elif card.recommendation == "risky":
             risk_rank += 1
             rank = risk_rank
-        elif card.recommendation == "watch" and card.data_scope == "qualitative":
+        elif card.recommendation == "watch" and card.data_scope in {"qualitative", "product_family"}:
             watch_rank += 1
             rank = watch_rank
         else:
@@ -415,6 +420,8 @@ def cards_to_markets(
             risks.append("کیفی و نامطمئن — امتیاز عددی ساخته نشده است")
         if card.data_scope in {"sector", "total"}:
             risks.append("داده گروهی/کل است؛ تقاضای دقیق HS6 تأیید نشده")
+        if card.data_scope == "product_family":
+            risks.append("شاهد مربوط به خانوادهٔ محصول است؛ تقاضای محصول دقیق و دسترسی از مبدأ نامشخص‌اند.")
 
         metrics = [
             MarketMetric(
